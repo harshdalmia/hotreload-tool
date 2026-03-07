@@ -1,9 +1,3 @@
-// Command hotreload watches a project directory for file changes and
-// automatically rebuilds and restarts a server when changes are detected.
-//
-// Usage:
-//
-//	hotreload --root ./myproject --build "go build -o ./bin/server ./cmd/server" --exec "./bin/server"
 package main
 
 import (
@@ -50,7 +44,6 @@ func main() {
 		"exec", *exec,
 	)
 
-	// Top-level context — cancelled on SIGINT / SIGTERM.
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 

@@ -36,8 +36,6 @@ func immediateExitCmd() string {
 	return "exit 0"
 }
 
-// --- RunBuild tests ---------------------------------------------------------
-
 func TestRunBuild_Success(t *testing.T) {
 	if err := RunBuild(context.Background(), "echo build ok"); err != nil {
 		t.Errorf("expected build to succeed, got: %v", err)
@@ -86,8 +84,6 @@ func TestRunBuild_CancelledMidFlight(t *testing.T) {
 		t.Errorf("RunBuild took too long after cancellation: %v", elapsed)
 	}
 }
-
-// --- Server tests -----------------------------------------------------------
 
 func TestServer_StartStop(t *testing.T) {
 	srv := NewServer(sleepCmd(60))

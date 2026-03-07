@@ -7,7 +7,7 @@ import (
 
 func TestCrashLoopDetection_NotLooping(t *testing.T) {
 	r := New("", "")
-	// Fewer than threshold crashes → not looping
+
 	r.mu.Lock()
 	r.crashTimes = []time.Time{time.Now()}
 	r.mu.Unlock()
@@ -38,7 +38,7 @@ func TestCrashLoopDetection_NotLoopingWhenOld(t *testing.T) {
 	now := time.Now()
 	r.mu.Lock()
 	r.crashTimes = []time.Time{
-		now.Add(-30 * time.Second), // old crash, outside window
+		now.Add(-30 * time.Second),
 		now.Add(-1 * time.Second),
 		now,
 	}

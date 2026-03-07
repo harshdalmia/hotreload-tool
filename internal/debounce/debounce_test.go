@@ -7,7 +7,6 @@ import (
 	"time"
 )
 
-// helper: run debouncer and count triggers, cancel after duration.
 func runAndCount(t *testing.T, quietMs int, duration time.Duration, feed func(in chan<- string)) int32 {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), duration)
@@ -28,7 +27,7 @@ func runAndCount(t *testing.T, quietMs int, duration time.Duration, feed func(in
 	}()
 
 	<-ctx.Done()
-	time.Sleep(10 * time.Millisecond) // allow goroutines to finish
+	time.Sleep(10 * time.Millisecond)
 	return atomic.LoadInt32(&count)
 }
 
@@ -42,7 +41,7 @@ func TestDebouncer_SingleFire(t *testing.T) {
 }
 
 func TestDebouncer_CoalescesBurst(t *testing.T) {
-	// 10 rapid events should result in exactly one trigger.
+
 	count := runAndCount(t, 50, 300*time.Millisecond, func(in chan<- string) {
 		for i := 0; i < 10; i++ {
 			in <- "main.go"
@@ -55,20 +54,20 @@ func TestDebouncer_CoalescesBurst(t *testing.T) {
 }
 
 func TestDebouncer_TwoBursts(t *testing.T) {
-	// Two bursts separated by a quiet period should each fire once.
+
 	count := runAndCount(t, 30, 500*time.Millisecond, func(in chan<- string) {
-		// First burst
+
 		for i := 0; i < 3; i++ {
 			in <- "main.go"
 			time.Sleep(5 * time.Millisecond)
 		}
-		time.Sleep(100 * time.Millisecond) // quiet period
-		// Second burst
+		time.Sleep(100 * time.Millisecond)
+
 		for i := 0; i < 3; i++ {
 			in <- "handler.go"
 			time.Sleep(5 * time.Millisecond)
 		}
-		time.Sleep(100 * time.Millisecond) // let timer fire
+		time.Sleep(100 * time.Millisecond)
 	})
 	if count != 2 {
 		t.Errorf("expected 2 triggers for 2 separate bursts, got %d", count)

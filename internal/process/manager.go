@@ -1,11 +1,3 @@
-// Package process manages the lifecycle of build and server sub-processes.
-//
-// Design:
-//   - Each process is started in its own process group / equivalent so we can
-//     terminate the whole tree (parent + spawned children) on rebuild.
-//   - Graceful termination first, then force-kill after gracePeriod if needed.
-//   - After killing, we wait for Wait() completion so resources are fully reaped.
-//   - Server and build logs are streamed directly to stdout/stderr.
 package process
 
 import (
@@ -20,19 +12,14 @@ import (
 )
 
 const (
-	// gracePeriod is how long we wait after graceful stop before force-killing.
 	gracePeriod = 5 * time.Second
 )
 
-// RunBuild runs the build command synchronously, streaming its output directly
-// to stdout/stderr. Returns nil on success; a non-nil error if the build
-// fails or if ctx is cancelled mid-build.
 func RunBuild(ctx context.Context, buildCmd string) error {
 	if buildCmd == "" {
 		return fmt.Errorf("empty build command")
 	}
 
-	// Run via OS shell so the command can contain pipes, redirects, env vars, etc.
 	cmd := shellCommand(buildCmd)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -57,27 +44,24 @@ func RunBuild(ctx context.Context, buildCmd string) error {
 		return nil
 
 	case <-ctx.Done():
-		// Context cancelled � kill build process tree and wait for reap.
+
 		killGroup(cmd.Process.Pid, "build", waitCh)
 		return fmt.Errorf("build cancelled: %w", ctx.Err())
 	}
 }
 
-// Server manages a single running server process.
 type Server struct {
 	execCmd string
 
 	mu        sync.Mutex
 	cmd       *exec.Cmd
-	done      chan struct{} // closed when the process exits
+	done      chan struct{}
 	startedAt time.Time
 	exitedAt  time.Time
 }
 
-// NewServer creates a Server for the given exec command.
 func NewServer(execCmd string) *Server {
-	// Initialise with an already-closed done channel so callers that check
-	// Done() before Start() is ever called do not block.
+
 	ch := make(chan struct{})
 	close(ch)
 	return &Server{
@@ -86,14 +70,11 @@ func NewServer(execCmd string) *Server {
 	}
 }
 
-// Start launches the server process. Server logs stream directly to
-// stdout/stderr with no buffering.
 func (s *Server) Start(ctx context.Context) error {
 	if s.execCmd == "" {
 		return fmt.Errorf("empty exec command")
 	}
 
-	// Use OS shell for the same reasons as RunBuild.
 	cmd := shellCommand(s.execCmd)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -110,12 +91,11 @@ func (s *Server) Start(ctx context.Context) error {
 	s.cmd = cmd
 	s.done = done
 	s.startedAt = now
-	s.exitedAt = time.Time{} // reset
+	s.exitedAt = time.Time{}
 	s.mu.Unlock()
 
 	slog.Info("server started", "pid", cmd.Process.Pid, "cmd", s.execCmd)
 
-	// Reap the process and record timing.
 	go func() {
 		err := cmd.Wait()
 		exitTime := time.Now()
@@ -133,13 +113,10 @@ func (s *Server) Start(ctx context.Context) error {
 		}
 	}()
 
-	_ = ctx // kept for API symmetry with prior implementation.
+	_ = ctx
 	return nil
 }
 
-// Stop terminates the server process and all of its children by signalling
-// the process group. Blocks until the process has been fully reaped.
-// Safe to call when no server is running.
 func (s *Server) Stop() {
 	s.mu.Lock()
 	cmd := s.cmd
@@ -154,7 +131,6 @@ func (s *Server) Stop() {
 	pid := cmd.Process.Pid
 	slog.Debug("stopping server", "pid", pid)
 
-	// Convert done (chan struct{}) into the chan error shape killGroup expects.
 	waitCh := make(chan error, 1)
 	go func() {
 		<-done
@@ -164,14 +140,12 @@ func (s *Server) Stop() {
 	killGroup(pid, "server", waitCh)
 }
 
-// Done returns a channel that is closed when the server process exits.
 func (s *Server) Done() <-chan struct{} {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.done
 }
 
-// IsRunning reports whether the server process is currently alive.
 func (s *Server) IsRunning() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -183,8 +157,6 @@ func (s *Server) IsRunning() bool {
 	}
 }
 
-// UptimeAtExit returns how long the server ran and whether it has exited.
-// If the server is still running, the second return value is false.
 func (s *Server) UptimeAtExit() (time.Duration, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -1,7 +1,3 @@
-// Package runner provides a self-contained build-and-run manager.
-// The Controller in internal/controller uses process.RunBuild and
-// process.Server directly; this package retains the Runner type for its
-// crash-loop detection logic and associated unit tests.
 package runner
 
 import (
@@ -15,37 +11,29 @@ import (
 )
 
 const (
-	// Time given to a process to exit gracefully before force-kill.
 	gracePeriod = 3 * time.Second
 
-	// If the server exits within this duration of starting, it counts as a crash.
 	crashWindow = 5 * time.Second
 
-	// How many consecutive crashes before we apply a back-off delay.
 	crashThreshold = 3
 
-	// How long to wait after detecting a crash loop before restarting.
 	crashBackoff = 3 * time.Second
 )
 
-// Runner manages the build-then-exec lifecycle for a single project.
 type Runner struct {
 	buildCmd string
 	execCmd  string
 
 	mu         sync.Mutex
-	serverProc *exec.Cmd     // currently-running server process (may be nil)
-	serverDone chan struct{} // closed when the server exits
-	crashTimes []time.Time   // recent crash timestamps (for loop detection)
+	serverProc *exec.Cmd
+	serverDone chan struct{}
+	crashTimes []time.Time
 }
 
-// New creates a Runner.
 func New(buildCmd, execCmd string) *Runner {
 	return &Runner{buildCmd: buildCmd, execCmd: execCmd}
 }
 
-// BuildAndRun runs the build command then (on success) starts the server.
-// It blocks until ctx is cancelled. Intended to be called in a goroutine.
 func (r *Runner) BuildAndRun(ctx context.Context) {
 	slog.Info("building", "cmd", r.buildCmd)
 
@@ -126,7 +114,6 @@ func (r *Runner) startServer(ctx context.Context) {
 	}
 }
 
-// killServer terminates the current server process and its process tree.
 func (r *Runner) killServer() {
 	r.mu.Lock()
 	proc := r.serverProc

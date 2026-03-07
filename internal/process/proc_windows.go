@@ -15,11 +15,9 @@ func setProcessGroup(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: syscall.CREATE_NEW_PROCESS_GROUP}
 }
 
-// killGroup uses taskkill on Windows to terminate the process tree.
 func killGroup(pid int, label string, waitCh <-chan error) {
 	pidStr := strconv.Itoa(pid)
 
-	// Try graceful tree termination first.
 	if err := exec.Command("taskkill", "/PID", pidStr, "/T").Run(); err != nil {
 		slog.Debug("taskkill graceful attempt failed", "label", label, "pid", pid, "err", err)
 	}
@@ -31,8 +29,7 @@ func killGroup(pid int, label string, waitCh <-chan error) {
 	case <-time.After(gracePeriod):
 	}
 
-	slog.Warn("process did not stop after graceful taskkill, forcing kill",
-		"label", label, "pid", pid, "grace_period", gracePeriod)
+	slog.Warn("process did not stop after graceful taskkill, forcing kill", "label", label, "pid", pid, "grace_period", gracePeriod)
 
 	if err := exec.Command("taskkill", "/PID", pidStr, "/T", "/F").Run(); err != nil {
 		slog.Warn("forced taskkill failed", "label", label, "pid", pid, "err", err)
