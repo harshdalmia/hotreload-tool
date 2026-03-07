@@ -1,7 +1,32 @@
+# Build output
 bin/
-coverage.out
-coverage.html
-.vscode/
+dist/
+build/
+*.exe
+*.test
+
+# Go module cache / toolchain artefacts
+vendor/
+*.o
+*.a
+*.so
+
+# Editor temp files
+*.swp
+*.swx
+*~
+.#*
+\#*\#
+
+# IDE metadata
 .idea/
+.vscode/
+*.iml
+
+# OS artefacts
 .DS_Store
 Thumbs.db
+
+# Test coverage reports
+coverage.out
+coverage.html
