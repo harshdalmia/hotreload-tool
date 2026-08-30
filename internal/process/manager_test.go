@@ -390,14 +390,17 @@ func TestBuilder_CancellationIsImmediate(t *testing.T) {
 	}
 }
 
-func TestNewServerWithKillDelay_ClampsInvalidValues(t *testing.T) {
-	if got := NewServerWithKillDelay("x", 0).killDelay; got != DefaultKillDelay {
+func TestWithKillDelay_ClampsInvalidValues(t *testing.T) {
+	if got := NewServer("x").killDelay; got != DefaultKillDelay {
+		t.Errorf("default killDelay = %v, want %v", got, DefaultKillDelay)
+	}
+	if got := NewServer("x", WithKillDelay(0)).killDelay; got != DefaultKillDelay {
 		t.Errorf("killDelay = %v, want default %v", got, DefaultKillDelay)
 	}
-	if got := NewServerWithKillDelay("x", -time.Second).killDelay; got != DefaultKillDelay {
+	if got := NewServer("x", WithKillDelay(-time.Second)).killDelay; got != DefaultKillDelay {
 		t.Errorf("killDelay = %v, want default %v", got, DefaultKillDelay)
 	}
-	if got := NewServerWithKillDelay("x", 2*time.Second).killDelay; got != 2*time.Second {
+	if got := NewServer("x", WithKillDelay(2*time.Second)).killDelay; got != 2*time.Second {
 		t.Errorf("killDelay = %v, want 2s", got)
 	}
 }

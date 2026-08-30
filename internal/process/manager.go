@@ -17,6 +17,7 @@ package process
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -33,59 +34,121 @@ const DefaultKillDelay = 5 * time.Second
 // before we declare the process unkillable.
 const forceKillTimeout = 2 * time.Second
 
-// Builder runs a project's build command.
+// Streams is where a child process's output goes. A nil writer falls back to
+// the corresponding standard stream, so the zero value behaves as before.
+type Streams struct {
+	Stdout io.Writer
+	Stderr io.Writer
+}
+
+func (s Streams) stdout() io.Writer {
+	if s.Stdout != nil {
+		return s.Stdout
+	}
+	return os.Stdout
+}
+
+func (s Streams) stderr() io.Writer {
+	if s.Stderr != nil {
+		return s.Stderr
+	}
+	return os.Stderr
+}
+
+// flusher is satisfied by the line-buffering writers in internal/logstream.
+type flusher interface{ Flush() error }
+
+// flush pushes out any partial trailing line once a process has exited.
+// Output that never ended in a newline would otherwise be swallowed.
+func (s Streams) flush() {
+	for _, w := range []io.Writer{s.Stdout, s.Stderr} {
+		if f, ok := w.(flusher); ok {
+			if err := f.Flush(); err != nil {
+				slog.Debug("could not flush process output", "err", err)
+			}
+		}
+	}
+}
+
+// Builder runs one shell command to completion: the build, or a pre/post hook.
 type Builder struct {
-	cmd string
+	cmd     string
+	label   string
+	streams Streams
+}
+
+// BuilderOption configures a Builder.
+type BuilderOption func(*Builder)
+
+// WithLabel sets the name used in log messages and output prefixes, so a hook
+// does not announce itself as a build.
+func WithLabel(label string) BuilderOption {
+	return func(b *Builder) { b.label = label }
+}
+
+// WithBuilderStreams redirects the command's output.
+func WithBuilderStreams(s Streams) BuilderOption {
+	return func(b *Builder) { b.streams = s }
 }
 
 // NewBuilder returns a Builder for the given shell command.
-func NewBuilder(cmd string) *Builder {
-	return &Builder{cmd: cmd}
+func NewBuilder(cmd string, opts ...BuilderOption) *Builder {
+	b := &Builder{cmd: cmd, label: "build"}
+	for _, opt := range opts {
+		opt(b)
+	}
+	if b.label == "" {
+		b.label = "build"
+	}
+	return b
 }
 
-// Build runs the build command synchronously, streaming its output to
-// stdout/stderr. It returns nil on success, and a non-nil error if the build
-// fails or ctx is cancelled mid-build.
+// Label reports the name this Builder uses in its log output.
+func (b *Builder) Label() string { return b.label }
+
+// Build runs the command synchronously, streaming its output. It returns nil on
+// success, and a non-nil error if the command fails or ctx is cancelled while
+// it runs.
 //
 // An empty command is a no-op that reports success. Python, Node and other
 // interpreted projects have nothing to compile, and requiring a placeholder
-// command from them would be busywork. Note that supplying a syntax checker
-// here (python -m compileall, node --check) is still worthwhile: a failing
-// build leaves the running server untouched, so a half-finished edit cannot
-// take it down.
+// command from them would be busywork; the same applies to unset hooks. Note
+// that supplying a syntax checker as the build command is still worthwhile: a
+// failing build leaves the running server untouched, so a half-finished edit
+// cannot take it down.
 func (b *Builder) Build(ctx context.Context) error {
 	if strings.TrimSpace(b.cmd) == "" {
-		slog.Debug("no build command configured, restarting without building")
+		slog.Debug("no command configured, skipping", "label", b.label)
 		return nil
 	}
-	return runBuild(ctx, b.cmd)
+	return runCommand(ctx, b.cmd, b.label, b.streams)
 }
 
 // RunBuild runs buildCmd, streaming its output to stdout/stderr.
 func RunBuild(ctx context.Context, buildCmd string) error {
-	return runBuild(ctx, buildCmd)
+	return runCommand(ctx, buildCmd, "build", Streams{})
 }
 
-func runBuild(ctx context.Context, buildCmd string) error {
-	if buildCmd == "" {
-		return fmt.Errorf("empty build command")
+func runCommand(ctx context.Context, command, label string, streams Streams) error {
+	if command == "" {
+		return fmt.Errorf("empty %s command", label)
 	}
 	// Don't spawn a process just to kill it if we were already superseded.
 	if err := ctx.Err(); err != nil {
-		return fmt.Errorf("build cancelled before start: %w", err)
+		return fmt.Errorf("%s cancelled before start: %w", label, err)
 	}
 
 	// Run via OS shell so the command can contain pipes, redirects, env vars, etc.
-	cmd := shellCommand(buildCmd)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	cmd := shellCommand(command)
+	cmd.Stdout = streams.stdout()
+	cmd.Stderr = streams.stderr()
 	setProcessGroup(cmd)
 
-	slog.Info("build starting", "cmd", buildCmd)
+	slog.Info(label+" starting", "cmd", command)
 	start := time.Now()
 
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("failed to start build: %w", err)
+		return fmt.Errorf("failed to start %s: %w", label, err)
 	}
 
 	waitCh := make(chan error, 1)
@@ -93,21 +156,23 @@ func runBuild(ctx context.Context, buildCmd string) error {
 
 	select {
 	case err := <-waitCh:
+		streams.flush()
 		if err != nil {
-			return fmt.Errorf("build failed: %w", err)
+			return fmt.Errorf("%s failed: %w", label, err)
 		}
-		slog.Info("build succeeded", "elapsed", time.Since(start).Round(time.Millisecond))
+		slog.Info(label+" succeeded", "elapsed", time.Since(start).Round(time.Millisecond))
 		return nil
 
 	case <-ctx.Done():
-		// Context cancelled: kill the build process tree and wait for reap.
+		// Context cancelled: kill the process tree and wait for reap.
 		//
 		// Grace of zero means "force-kill immediately". A compiler has nothing
 		// to flush and no connections to drain, so a graceful signal would buy
 		// nothing and cost the whole kill delay. Cancellation happens on every
 		// keystroke-triggered save, so it has to be instant.
-		killGroup(cmd.Process.Pid, "build", 0, waitCh)
-		return fmt.Errorf("build cancelled: %w", ctx.Err())
+		killGroup(cmd.Process.Pid, label, 0, waitCh)
+		streams.flush()
+		return fmt.Errorf("%s cancelled: %w", label, ctx.Err())
 	}
 }
 
@@ -129,6 +194,7 @@ type ExitInfo struct {
 type Server struct {
 	execCmd   string
 	killDelay time.Duration
+	streams   Streams
 
 	mu        sync.Mutex
 	cmd       *exec.Cmd
@@ -145,27 +211,41 @@ type Server struct {
 	exits chan ExitInfo
 }
 
-// NewServer creates a Server for the given exec command using the default
-// kill delay.
-func NewServer(execCmd string) *Server {
-	return NewServerWithKillDelay(execCmd, DefaultKillDelay)
+// ServerOption configures a Server.
+type ServerOption func(*Server)
+
+// WithKillDelay sets how long the process gets to exit gracefully before it is
+// force-killed. Non-positive values fall back to DefaultKillDelay.
+func WithKillDelay(d time.Duration) ServerOption {
+	return func(s *Server) { s.killDelay = d }
 }
 
-// NewServerWithKillDelay creates a Server with an explicit kill delay.
-func NewServerWithKillDelay(execCmd string, killDelay time.Duration) *Server {
-	if killDelay <= 0 {
-		killDelay = DefaultKillDelay
-	}
+// WithStreams redirects the server's output.
+func WithStreams(st Streams) ServerOption {
+	return func(s *Server) { s.streams = st }
+}
+
+// NewServer creates a Server for the given exec command. Without options it
+// uses the default kill delay and writes straight to stdout and stderr.
+func NewServer(execCmd string, opts ...ServerOption) *Server {
 	// Initialise with an already-closed done channel so callers that check
 	// Done() before Start() is ever called do not block.
 	ch := make(chan struct{})
 	close(ch)
-	return &Server{
+
+	s := &Server{
 		execCmd:   execCmd,
-		killDelay: killDelay,
+		killDelay: DefaultKillDelay,
 		done:      ch,
 		exits:     make(chan ExitInfo, 1),
 	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	if s.killDelay <= 0 {
+		s.killDelay = DefaultKillDelay
+	}
+	return s
 }
 
 // Start launches the server process. Server logs stream directly to
@@ -184,8 +264,8 @@ func (s *Server) Start(ctx context.Context) error {
 
 	// Use OS shell for the same reasons as the build command.
 	cmd := shellCommand(s.execCmd)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	cmd.Stdout = s.streams.stdout()
+	cmd.Stderr = s.streams.stderr()
 	setProcessGroup(cmd)
 
 	if err := cmd.Start(); err != nil {
@@ -226,6 +306,8 @@ func (s *Server) Start(ctx context.Context) error {
 func (s *Server) reap(cmd *exec.Cmd, done chan struct{}, startedAt time.Time) {
 	err := cmd.Wait()
 	exitTime := time.Now()
+	// A crash message may not have ended in a newline.
+	s.streams.flush()
 
 	s.mu.Lock()
 	s.exitedAt = exitTime
