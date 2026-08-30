@@ -43,15 +43,20 @@ jobs:
       - name: go vet
         run: go vet ./...
 
+      # -diff reports what tidying would change and exits non-zero, without
+      # writing to the working tree. Comparing with git diff instead would
+      # report "something changed" and hide which requirement moved.
       - name: Check go.mod and go.sum are tidy
-        run: |
-          go mod tidy
-          git diff --exit-code -- go.mod go.sum
+        run: go mod tidy -diff
 
+      # v8 of the action is the first that drives golangci-lint v2, which
+      # .golangci.yml targets. v6 resolves "latest" to a v1 release built with
+      # Go 1.24, which refuses to analyse a module declaring go 1.25.0.
+      # The version is pinned so a new release cannot break CI unannounced.
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v8
         with:
-          version: latest
+          version: v2.8.0
 
   # The process and watcher packages are the platform-specific parts of this
   # project, so the test matrix has to cover all three OSes to be worth much.

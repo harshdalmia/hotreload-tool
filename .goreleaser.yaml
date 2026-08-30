@@ -10,7 +10,8 @@ project_name: hotreload
 
 before:
   hooks:
-    - go mod tidy
+    # Deliberately no `go mod tidy` here: a release build must not mutate the
+    # module files it is building from. Tidiness is enforced in CI instead.
     - go test ./... -short -count=1
 
 builds:
