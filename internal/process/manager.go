@@ -20,6 +20,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
 )
@@ -45,7 +46,18 @@ func NewBuilder(cmd string) *Builder {
 // Build runs the build command synchronously, streaming its output to
 // stdout/stderr. It returns nil on success, and a non-nil error if the build
 // fails or ctx is cancelled mid-build.
+//
+// An empty command is a no-op that reports success. Python, Node and other
+// interpreted projects have nothing to compile, and requiring a placeholder
+// command from them would be busywork. Note that supplying a syntax checker
+// here (python -m compileall, node --check) is still worthwhile: a failing
+// build leaves the running server untouched, so a half-finished edit cannot
+// take it down.
 func (b *Builder) Build(ctx context.Context) error {
+	if strings.TrimSpace(b.cmd) == "" {
+		slog.Debug("no build command configured, restarting without building")
+		return nil
+	}
 	return runBuild(ctx, b.cmd)
 }
 

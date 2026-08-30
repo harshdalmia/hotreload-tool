@@ -418,3 +418,45 @@ func isWindows() bool {
 func shellQuote(s string) string {
 	return `"` + s + `"`
 }
+
+// TestE2E_NoBuildCommandStillRestarts is the interpreted-language workflow end
+// to end: Python and Node have nothing to compile, so a save should restart the
+// process directly rather than requiring a placeholder build command.
+//
+// The server binary is compiled once up front, outside hotreload, and the build
+// command is left empty. Editing a watched file must therefore restart the
+// process without producing a new binary, which is exactly what an interpreted
+// project looks like from hotreload's point of view.
+func TestE2E_NoBuildCommandStillRestarts(t *testing.T) {
+	skipIfShort(t)
+	f := newFixture(t)
+
+	// Compile once ourselves, so hotreload has something to run.
+	build := exec.Command("go", "build", "-C", f.root, "-o", f.binPath, ".")
+	build.Stdout, build.Stderr = os.Stdout, os.Stderr
+	if err := build.Run(); err != nil {
+		t.Fatalf("pre-building the server failed: %v", err)
+	}
+
+	f.cfg.Build = "" // the whole point of this test
+	if err := f.cfg.Validate(); err != nil {
+		t.Fatalf("an empty build command should be valid: %v", err)
+	}
+	f.run(t)
+
+	f.awaitVersion(t, "V1", 30*time.Second)
+	if got := f.startCount(); got != 1 {
+		t.Fatalf("server start count = %d, want 1", got)
+	}
+
+	// A save must restart the process even though nothing is compiled.
+	f.writeServer(t, "V2", keepRunning)
+	f.awaitStartCount(t, 2, 30*time.Second)
+
+	// The binary was never rebuilt, so the running code is still V1. That is
+	// correct: without a build step hotreload restarts, it does not compile.
+	if version, _, ok := f.sampleHeartbeat(5 * time.Second); ok && version != "V1" {
+		t.Errorf("heartbeat version = %q, want V1; no build step should mean no new binary", version)
+	}
+	f.requireAlive(t, "V1")
+}

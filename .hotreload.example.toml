@@ -13,6 +13,11 @@ root = "."
 
 # Command run when a change is detected. Anything your shell understands works,
 # including pipes and redirects.
+#
+# Optional: interpreted projects have nothing to compile, so omitting it means a
+# change restarts the server directly. Even then a syntax check is worth putting
+# here (python -m compileall -q ., node --check server.js), because a failed
+# build leaves the running server untouched.
 build = "go build -o ./bin/app ./cmd/app"
 
 # Command that runs the built artefact.
@@ -32,9 +37,13 @@ kill_delay = "5s"
 # README edit from triggering a compile.
 include_ext = [".go", ".tmpl", ".html"]
 
-# Extra directory names to ignore, on top of the built-in set
-# (.git, node_modules, vendor, bin, dist, build, tmp, temp, any dot-directory,
-#  and a few editor and language caches).
+# Extra directory names to ignore, on top of the built-in set (.git,
+# node_modules, vendor, bin, dist, build, target, obj, venv, coverage, tmp,
+# temp, __pycache__, any dot-directory, and a few editor caches).
+#
+# Build output is already covered. That is deliberate: build tools rewrite files
+# in their output directory on every run, so watching one turns a single save
+# into an endless rebuild loop.
 exclude_dir = ["testdata", "docs"]
 
 # Directory names to watch even though they are ignored by default. This is the

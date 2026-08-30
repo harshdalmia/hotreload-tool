@@ -48,8 +48,8 @@ func run(args []string) error {
 
 	var (
 		root       = fs.String("root", defaults.Root, "Directory to watch recursively for changes")
-		build      = fs.String("build", "", "Command used to build the project when a change is detected (required)")
-		execCmd    = fs.String("exec", "", "Command used to run the built server after a successful build (required)")
+		build      = fs.String("build", "", "Command used to build the project when a change is detected (omit for interpreted projects)")
+		execCmd    = fs.String("exec", "", "Command used to run the server (required)")
 		debounceFl = fs.Duration("debounce", defaults.Debounce, "Quiet window after the last change before rebuilding")
 		killDelay  = fs.Duration("kill-delay", defaults.KillDelay, "Time a process gets to exit gracefully before being force-killed")
 		configPath = fs.String("config", "", "Path to a config file (default: ./"+config.FileName+" if present)")
@@ -188,7 +188,7 @@ func usage(fs *flag.FlagSet) {
 	fmt.Fprintf(out, `hotreload %s - rebuild and restart your server on file change
 
 Usage:
-  hotreload --build "<cmd>" --exec "<cmd>" [flags]
+  hotreload --exec "<cmd>" [--build "<cmd>"] [flags]
 
 Flags:
 `, version)
@@ -214,6 +214,13 @@ Examples:
 
   # Only recompile when Go or template files change
   hotreload --build "make build" --exec "./bin/app" --include-ext .go,.tmpl
+
+  # Interpreted project: no build step, just restart
+  hotreload --exec "python app.py" --include-ext .py
+
+  # Same, but let a syntax check stand in for the build so a broken save
+  # leaves the running server alone
+  hotreload --build "python -m compileall -q ." --exec "python app.py" --include-ext .py
 
   # Sources live in a directory hotreload ignores by default
   hotreload --build "make" --exec "./out/app" --include-dir build

@@ -300,9 +300,8 @@ func TestValidate_Rejects(t *testing.T) {
 		mutate func(*Config)
 		want   string
 	}{
-		{"missing build", func(c *Config) { c.Build = "" }, "build command"},
-		{"blank build", func(c *Config) { c.Build = "   " }, "build command"},
 		{"missing exec", func(c *Config) { c.Exec = "" }, "exec command"},
+		{"blank exec", func(c *Config) { c.Exec = "   " }, "exec command"},
 		{"negative debounce", func(c *Config) { c.Debounce = -time.Second }, "debounce"},
 		{"zero kill delay", func(c *Config) { c.KillDelay = 0 }, "kill-delay"},
 		{"negative kill delay", func(c *Config) { c.KillDelay = -time.Second }, "kill-delay"},
@@ -339,5 +338,20 @@ func TestValidate_ZeroDebounceIsAllowed(t *testing.T) {
 	c.Debounce = 0
 	if err := c.Validate(); err != nil {
 		t.Errorf("a zero debounce should be allowed, got: %v", err)
+	}
+}
+
+// TestValidate_BuildIsOptional covers interpreted projects. Python and Node
+// have nothing to compile, and requiring a placeholder --build "true" from
+// them was pure friction.
+func TestValidate_BuildIsOptional(t *testing.T) {
+	for _, build := range []string{"", "   "} {
+		c := Default()
+		c.Root = t.TempDir()
+		c.Build = build
+		c.Exec = "python app.py"
+		if err := c.Validate(); err != nil {
+			t.Errorf("Validate() with build %q = %v, want nil", build, err)
+		}
 	}
 }

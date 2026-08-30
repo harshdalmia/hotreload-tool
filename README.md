@@ -56,10 +56,10 @@ go build -o ./bin/hotreload ./cmd/hotreload
 ## Usage
 
 ```text
-hotreload --build "<cmd>" --exec "<cmd>" [flags]
+hotreload --exec "<cmd>" [--build "<cmd>"] [flags]
 
-  --build         Command run when a change is detected.              Required.
-  --exec          Command that runs the built artefact.               Required.
+  --exec          Command that runs your server.                      Required.
+  --build         Command run when a change is detected.              Optional.
   --root          Directory watched recursively.                      Default: .
   --debounce      Quiet window after the last change.                 Default: 150ms
   --kill-delay    Grace period before a process is force-killed.      Default: 5s
@@ -72,6 +72,32 @@ hotreload --build "<cmd>" --exec "<cmd>" [flags]
 ```
 
 `--build` and `--exec` are passed to your shell (`sh -c` on Unix, `cmd /S /C` on Windows), so pipes, redirects, globs, and environment variables all work.
+
+### Interpreted projects
+
+`--build` is optional. Python, Node, Ruby and friends have nothing to compile, so a save restarts the process directly:
+
+```bash
+hotreload --exec "python app.py" --include-ext .py
+hotreload --exec "node server.js" --include-ext .js,.mjs
+```
+
+It is still worth putting a syntax check in the build slot, because a failed build leaves the running server untouched. That way a half-finished edit can't take your server down:
+
+```bash
+hotreload --build "python -m compileall -q ." --exec "python app.py" --include-ext .py
+hotreload --build "node --check server.js"     --exec "node server.js" --include-ext .js
+```
+
+### Compiled projects other than Go
+
+```bash
+hotreload --build "cargo build"    --exec "./target/debug/server" --include-ext .rs
+hotreload --build "npx tsc"        --exec "node dist/server.js"   --include-ext .ts
+hotreload --build "mvn -q package" --exec "java -jar target/app.jar" --include-ext .java
+```
+
+Build output directories are ignored by default, including `target`, `obj`, `bin`, `dist`, `build` and `coverage`. That matters more than it sounds: build tools rewrite files in their output directory on every run, so watching one turns a single save into an endless rebuild loop.
 
 ### Only rebuild for the files that matter
 
@@ -121,7 +147,11 @@ See [.hotreload.example.toml](./.hotreload.example.toml) for the annotated versi
 
 **A clean exit is not restarted.** A server that exits with status 0 is assumed to have meant it, so a one-shot `--exec` command does not spin forever.
 
-**Whole process trees are stopped.** Your server's children go with it, so nothing is left holding the port.
+**Whole process trees are stopped.** Your server's children go with it, so nothing is left holding the port. This matters for wrappers like `npm start` or `mvn exec`, where the real process is a child.
+
+**Build output never triggers a rebuild.** `target`, `obj`, `bin`, `dist`, `build`, `coverage`, `node_modules`, `vendor`, `venv` and `__pycache__` are ignored by default, so a build writing its own artefacts cannot start a loop. Use `--include-dir` if your sources genuinely live in one of them.
+
+**No build step is fine.** Omit `--build` and a change restarts your server directly.
 
 **New directories are picked up while running.** Including ones that arrive already populated — a branch switch, an unzip, a `cp -r` — where the files were created before any watch existed.
 

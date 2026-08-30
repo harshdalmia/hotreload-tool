@@ -401,3 +401,27 @@ func TestNewServerWithKillDelay_ClampsInvalidValues(t *testing.T) {
 		t.Errorf("killDelay = %v, want 2s", got)
 	}
 }
+
+// TestBuilder_EmptyCommandIsANoOp is the interpreted-language path: no build
+// step, so Build reports success immediately and the controller goes straight
+// to restarting the server.
+func TestBuilder_EmptyCommandIsANoOp(t *testing.T) {
+	for _, cmd := range []string{"", "   "} {
+		b := NewBuilder(cmd)
+		start := time.Now()
+		if err := b.Build(context.Background()); err != nil {
+			t.Errorf("Build() with command %q = %v, want nil", cmd, err)
+		}
+		if elapsed := time.Since(start); elapsed > time.Second {
+			t.Errorf("a no-op build took %v; it should not spawn a process", elapsed)
+		}
+	}
+}
+
+// TestRunBuild_EmptyCommandStillErrors keeps the low-level helper strict. Only
+// Builder treats an absent command as a deliberate choice.
+func TestRunBuild_EmptyCommandStillErrors(t *testing.T) {
+	if err := RunBuild(context.Background(), ""); err == nil {
+		t.Error("RunBuild with an empty command should still report an error")
+	}
+}

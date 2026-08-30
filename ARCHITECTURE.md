@@ -65,7 +65,7 @@
 ### `internal/filter`
 
 - Decides which directories are watched and which files trigger rebuilds.
-- Built-in ignores cover VCS metadata, dependency trees, build output, hidden files, and editor swap/temp artefacts.
+- Built-in ignores cover VCS metadata, dependency trees, build output, hidden files, and editor swap/temp artefacts. Build output is the load-bearing case: build tools rewrite files in their output directory on every run, so watching one turns a single save into an endless rebuild loop. `target` covers cargo and Maven, `obj` covers .NET, alongside `bin`, `dist`, `build` and `coverage`.
 - Configurable through `--include-ext` (an allow-list of extensions), `--exclude-dir` (additions to the ignore set), and `--include-dir` (removals from it, including the otherwise inescapable all-dot-directories rule).
 - Directory rules are matched per path component, and only against the portion of a path *below* the watched root. Scoping matters: an unscoped check runs over the whole absolute path, so a project at `/tmp/myproject` sits inside a component named `tmp` that the built-in rules ignore, and nothing under it is ever reported. Anything above the root is not the user's project and is not judged.
 
@@ -126,6 +126,7 @@ Without that split, a build finishing inside the debounce window would see an un
 ## Error handling policy
 
 - Build errors are logged; the running server is left alone and hotreload continues.
+- An absent build command is not an error. Interpreted projects have nothing to compile, so `Builder.Build` treats an empty command as immediate success and the reload becomes a plain restart. The low-level `RunBuild` helper stays strict, so only the deliberate choice is tolerated.
 - Watch-add failures (inotify limits, permissions) are warned about and the walk continues rather than aborting.
 - A server that exits non-zero on its own is restarted, with crash-loop backoff.
 - A server that exits zero on its own is reported but not restarted, so a one-shot command cannot spin.

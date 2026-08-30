@@ -35,7 +35,8 @@ type Config struct {
 	// after Normalize.
 	Root string
 
-	// Build is the shell command run when a change is detected.
+	// Build is the shell command run when a change is detected. Empty means
+	// there is nothing to compile, so a change restarts the server directly.
 	Build string
 
 	// Exec is the shell command that runs the built artefact.
@@ -174,10 +175,10 @@ func (c *Config) Normalize() error {
 }
 
 // Validate reports whether the configuration is usable.
+//
+// Build is deliberately not required. Interpreted projects have nothing to
+// compile, and demanding a placeholder command from them would be noise.
 func (c *Config) Validate() error {
-	if strings.TrimSpace(c.Build) == "" {
-		return fmt.Errorf("a build command is required (--build or build= in %s)", FileName)
-	}
 	if strings.TrimSpace(c.Exec) == "" {
 		return fmt.Errorf("an exec command is required (--exec or exec= in %s)", FileName)
 	}
