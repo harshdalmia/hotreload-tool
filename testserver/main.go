@@ -1,3 +1,11 @@
+// testserver is a minimal HTTP server used to demonstrate hotreload.
+//
+// To try it:
+//
+//	make demo
+//
+// Then visit http://localhost:8080 and edit the version constant below.
+// Save the file and watch hotreload automatically rebuild and restart the server.
 package main
 
 import (
@@ -10,7 +18,10 @@ import (
 	"time"
 )
 
+// ── Edit this line and save to trigger a hot reload ──────────────────────────
 const version = "v1.0.1"
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 var requestCount atomic.Int64
 var startTime = time.Now()
@@ -52,8 +63,11 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleSlow simulates a slow endpoint — useful for testing graceful shutdown:
+// start a /slow request, then edit+save to trigger a reload and confirm the
+// in-flight request is given time to finish (or the process is killed after 5s).
 func handleSlow(w http.ResponseWriter, r *http.Request) {
-	log.Printf("slow request started — sleeping 3s")
+	log.Printf("slow request started - sleeping 3s")
 	time.Sleep(3 * time.Second)
 	fmt.Fprintf(w, "slow response from %s\n", version)
 }
