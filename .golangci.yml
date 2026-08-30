@@ -75,14 +75,25 @@ linters:
         # Both fight the explanatory comment style used throughout this repo.
         - commentFormatting
         - whyNoLint
+        # config.Config is passed by value on purpose: the controller owns an
+        # immutable copy that the caller cannot mutate underneath it. It is a
+        # 144-byte struct copied once per process, so the pointer this would
+        # ask for buys nothing and gives up that guarantee.
+        - hugeParam
 
     goconst:
       min-len: 3
       min-occurrences: 4
-      ignore-tests: true
 
     misspell:
-      locale: UK
+      # No locale is set deliberately. Pinning en-GB made misspell demand
+      # "Normalise" for the exported Normalize method and 21 of its call sites,
+      # which is a linter dictating Go identifiers. Without a locale it flags
+      # genuine typos and leaves en-GB/en-US variants in prose alone, which is
+      # what was actually wanted.
+      ignore-rules:
+        - behaviour
+        - artefact
 
   exclusions:
     generated: lax

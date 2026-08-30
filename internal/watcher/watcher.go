@@ -223,7 +223,11 @@ func (w *Watcher) firstRelevantFile(root string) (string, bool) {
 	var found string
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
-			return nil // tolerate races with a tree still being written
+			// Tolerate races with a tree that is still being written: the
+			// directory may be mid-extraction. Continuing is correct, but the
+			// error is worth surfacing under -verbose.
+			slog.Debug("skipping path while scanning new directory", "path", path, "err", err)
+			return nil
 		}
 		if d.IsDir() {
 			if path != root && w.filter.ShouldIgnoreDir(path) {

@@ -161,9 +161,13 @@ func resolveConfigPath(explicit string) (string, error) {
 		return explicit, nil
 	}
 
+	// Without a working directory there is nowhere to look for a default
+	// config file. That is not fatal: running without one is the normal case,
+	// and --config remains available.
 	cwd, err := os.Getwd()
 	if err != nil {
-		return "", nil // not fatal; just skip auto-discovery
+		//nolint:nilerr // deliberate: absence of a discoverable config is not an error
+		return "", nil
 	}
 	if found, ok := config.FindFile(cwd); ok {
 		return found, nil

@@ -1,5 +1,5 @@
 .PHONY: help build install demo demo-verbose test test-race test-short test-e2e \
-        test-coverage fmt fmt-check vet lint tidy tidy-check check ci deps clean
+        test-coverage fmt fmt-check vet lint lint-install tidy check ci deps clean
 
 BINARY   := hotreload
 BIN_DIR  := bin
@@ -14,6 +14,9 @@ ROOT_DIR := $(CURDIR)
 VERSION ?= dev
 COMMIT  ?= none
 DATE    ?= unknown
+
+# Keep in step with the version pinned in .github/workflows/ci.yml.
+GOLANGCI_VERSION ?= v2.8.0
 LDFLAGS := -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(DATE)
 
 # Windows needs a .exe suffix, and its shell has different delete syntax.
@@ -48,7 +51,8 @@ help:
 	@echo "  fmt            Format the tree with gofmt"
 	@echo "  fmt-check      Fail if anything is unformatted"
 	@echo "  vet            Run go vet"
-	@echo "  lint           Run golangci-lint (must be installed)"
+	@echo "  lint           Run golangci-lint"
+	@echo "  lint-install   Install the pinned golangci-lint version"
 	@echo "  check          fmt-check + vet + test"
 	@echo "  ci             What CI runs: fmt-check + vet + test-race"
 	@echo "  clean          Remove build artefacts"
@@ -141,10 +145,16 @@ fmt-check:
 vet:
 	go vet ./...
 
-## Run golangci-lint. Install it with:
-##   go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+## Run golangci-lint. Install the version CI uses with:
+##   make lint-install
+## The v2 module path matters: the old path installs a v1 binary, which cannot
+## read the v2 .golangci.yml and fails with a schema error.
 lint:
 	golangci-lint run
+
+## Install the pinned golangci-lint version
+lint-install:
+	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_VERSION)
 
 ## Tidy dependencies
 tidy:

@@ -76,7 +76,8 @@ function Task-Help {
         @{ n = 'fmt';           d = 'Format the tree with gofmt' }
         @{ n = 'fmt-check';     d = 'Fail if anything is unformatted' }
         @{ n = 'vet';           d = 'Run go vet' }
-        @{ n = 'lint';          d = 'Run golangci-lint (must be installed)' }
+        @{ n = 'lint';          d = 'Run golangci-lint' }
+        @{ n = 'lint-install';  d = 'Install the pinned golangci-lint version' }
         @{ n = 'check';         d = 'fmt-check + vet + test' }
         @{ n = 'ci';            d = 'fmt-check + vet + test-race' }
         @{ n = 'deps';          d = 'Tidy and download dependencies' }
@@ -147,11 +148,20 @@ function Task-FmtCheck {
 
 function Task-Vet { Invoke-Go vet './...' }
 
+# Keep in step with the version pinned in .github/workflows/ci.yml.
+$GolangciVersion = 'v2.8.0'
+
 function Task-Lint {
     if (-not (Get-Command golangci-lint -ErrorAction SilentlyContinue)) {
-        throw 'golangci-lint not found. Install it with: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest'
+        # The v2 module path matters: the old path installs a v1 binary, which
+        # cannot read the v2 .golangci.yml and fails with a schema error.
+        throw ".\make.ps1 lint-install first (golangci-lint not found on PATH)"
     }
     Invoke-Checked -Exe 'golangci-lint' -Arguments @('run')
+}
+
+function Task-LintInstall {
+    Invoke-Go install "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$GolangciVersion"
 }
 
 function Task-Deps {
@@ -183,6 +193,7 @@ switch ($Task.ToLowerInvariant()) {
     'fmt-check'     { Task-FmtCheck }
     'vet'           { Task-Vet }
     'lint'          { Task-Lint }
+    'lint-install'  { Task-LintInstall }
     'check'         { Task-FmtCheck; Task-Vet; Task-Test }
     'ci'            { Task-FmtCheck; Task-Vet; Task-TestRace }
     'deps'          { Task-Deps }
