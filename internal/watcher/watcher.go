@@ -63,6 +63,10 @@ func New(root string, f *filter.Filter) (*Watcher, error) {
 	if f == nil {
 		f = filter.Default()
 	}
+	// Scope ignore rules to the watched tree. Without this, a root such as
+	// /tmp/myproject sits inside a component named "tmp" that the built-in
+	// rules ignore, and nothing under it would ever be reported.
+	f = f.WithRoot(root)
 
 	fw, err := fsnotify.NewWatcher()
 	if err != nil {

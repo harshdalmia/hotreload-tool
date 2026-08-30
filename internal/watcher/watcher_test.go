@@ -426,3 +426,46 @@ func TestWatcher_IncludeDirMakesIgnoredSubdirWatchable(t *testing.T) {
 		t.Error("expected an event from an explicitly included build/ directory")
 	}
 }
+
+// TestWatcher_RootUnderIgnoredDirectoryStillReportsEvents is the end-to-end
+// form of the scoping bug: a project whose absolute path happens to contain an
+// ignored component must still be watched.
+//
+// This is how the bug reached CI. Every Linux temp directory lives under /tmp,
+// and "tmp" is ignored by default, so every watcher test that expected an event
+// got none. Building the path explicitly reproduces it on any OS.
+func TestWatcher_RootUnderIgnoredDirectoryStillReportsEvents(t *testing.T) {
+	for _, name := range []string{"tmp", "build", "dist", "vendor"} {
+		t.Run(name, func(t *testing.T) {
+			root := filepath.Join(t.TempDir(), name, "myproject")
+			if err := os.MkdirAll(root, 0o755); err != nil {
+				t.Fatalf("MkdirAll: %v", err)
+			}
+
+			w, err := watcher.New(root, filter.Default())
+			if err != nil {
+				t.Fatalf("watcher.New: %v", err)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			t.Cleanup(func() {
+				cancel()
+				w.Close()
+			})
+			go w.Run(ctx)
+
+			if w.WatchedCount() < 1 {
+				t.Fatalf("root under a %q directory was not watched at all", name)
+			}
+			time.Sleep(50 * time.Millisecond)
+
+			if err := os.WriteFile(filepath.Join(root, "main.go"),
+				[]byte("package main\n"), 0o644); err != nil {
+				t.Fatalf("WriteFile: %v", err)
+			}
+
+			if !waitEvent(t, w, "main.go", 3*time.Second) {
+				t.Errorf("no event for a project under a %q directory; ignore rules are leaking above the root", name)
+			}
+		})
+	}
+}

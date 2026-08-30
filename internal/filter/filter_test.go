@@ -1,6 +1,9 @@
 package filter
 
-import "testing"
+import (
+	"path/filepath"
+	"testing"
+)
 
 func TestShouldIgnoreDir(t *testing.T) {
 	cases := []struct {
@@ -272,5 +275,103 @@ func TestShouldIgnoreDir_ParentTraversalIsNotIgnored(t *testing.T) {
 	// ".." must not be treated as a hidden directory.
 	if ShouldIgnoreDir("../sibling") {
 		t.Error(`".." should not be treated as a hidden directory`)
+	}
+}
+
+// --- WithRoot ---------------------------------------------------------------
+
+// TestWithRoot_IgnoresComponentsAboveTheRoot is a regression test for a bug
+// that made hotreload silently useless on Linux.
+//
+// Directory rules match per path component, and the check used to run over the
+// whole absolute path. Every Linux temp directory lives under /tmp, and "tmp"
+// is on the built-in ignore list, so every file below the root was ignored and
+// no reload ever fired. It went unnoticed because Windows temp paths use a
+// capital "Temp" and macOS uses /var/folders, so neither platform tripped it.
+//
+// The path is built by hand rather than from t.TempDir() so the case is
+// reproduced identically on every OS.
+func TestWithRoot_IgnoresComponentsAboveTheRoot(t *testing.T) {
+	sep := string(filepath.Separator)
+	root := filepath.Join(sep+"tmp", "build", "myproject")
+	f := Default().WithRoot(root)
+
+	// Nothing above the root may influence the decision, even though this path
+	// contains both "tmp" and "build".
+	allowed := []string{
+		filepath.Join(root, "main.go"),
+		filepath.Join(root, "internal", "server", "handler.go"),
+		filepath.Join(root, "README.md"),
+	}
+	for _, p := range allowed {
+		if f.ShouldIgnoreFile(p) {
+			t.Errorf("ShouldIgnoreFile(%q) = true; components above the root must not be considered", p)
+		}
+	}
+	if f.ShouldIgnoreDir(filepath.Join(root, "internal")) {
+		t.Error("a normal directory under the root must not be ignored")
+	}
+	// The root itself is always watchable.
+	if f.ShouldIgnoreDir(root) {
+		t.Error("the watched root must never be ignored")
+	}
+}
+
+// TestWithRoot_StillAppliesRulesInsideTheRoot is the other half: scoping must
+// not disable the ignore rules, only relocate where they apply.
+func TestWithRoot_StillAppliesRulesInsideTheRoot(t *testing.T) {
+	sep := string(filepath.Separator)
+	root := filepath.Join(sep+"tmp", "myproject")
+	f := Default().WithRoot(root)
+
+	ignored := []string{
+		filepath.Join(root, "tmp", "scratch.go"),
+		filepath.Join(root, "node_modules", "pkg", "index.js"),
+		filepath.Join(root, "bin", "server"),
+		filepath.Join(root, ".git", "COMMIT_EDITMSG"),
+		filepath.Join(root, "build", "out.go"),
+	}
+	for _, p := range ignored {
+		if !f.ShouldIgnoreFile(p) {
+			t.Errorf("ShouldIgnoreFile(%q) = false; rules must still apply below the root", p)
+		}
+	}
+}
+
+// TestWithRoot_PathOutsideRootIsJudgedWhole covers the fallback: a path that is
+// not under the root gets evaluated on its own terms rather than silently
+// allowed.
+func TestWithRoot_PathOutsideRootIsJudgedWhole(t *testing.T) {
+	sep := string(filepath.Separator)
+	f := Default().WithRoot(filepath.Join(sep+"home", "me", "project"))
+
+	outside := filepath.Join(sep+"home", "me", "other", "node_modules", "x.js")
+	if !f.ShouldIgnoreFile(outside) {
+		t.Errorf("ShouldIgnoreFile(%q) = false; a path outside the root should still be filtered", outside)
+	}
+}
+
+// TestWithRoot_DoesNotMutateReceiver guards the shared rule maps.
+func TestWithRoot_DoesNotMutateReceiver(t *testing.T) {
+	base := Default()
+	scoped := base.WithRoot(filepath.Join(string(filepath.Separator)+"tmp", "p"))
+
+	if base.root != "" {
+		t.Error("WithRoot must not modify the receiver")
+	}
+	if scoped.root == "" {
+		t.Error("WithRoot must set the root on the copy")
+	}
+	// Rules survive the copy.
+	if !scoped.ShouldIgnoreDir(filepath.Join(string(filepath.Separator)+"tmp", "p", ".git")) {
+		t.Error("the copy lost its ignore rules")
+	}
+}
+
+// TestNoRoot_PreservesLegacyBehaviour: an unscoped Filter still evaluates the
+// whole path, which is what the package-level helpers and their tests rely on.
+func TestNoRoot_PreservesLegacyBehaviour(t *testing.T) {
+	if !Default().ShouldIgnoreDir("node_modules/react") {
+		t.Error("an unscoped filter should still apply rules to the path as given")
 	}
 }

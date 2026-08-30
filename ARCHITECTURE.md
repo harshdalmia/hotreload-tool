@@ -67,6 +67,7 @@
 - Decides which directories are watched and which files trigger rebuilds.
 - Built-in ignores cover VCS metadata, dependency trees, build output, hidden files, and editor swap/temp artefacts.
 - Configurable through `--include-ext` (an allow-list of extensions), `--exclude-dir` (additions to the ignore set), and `--include-dir` (removals from it, including the otherwise inescapable all-dot-directories rule).
+- Directory rules are matched per path component, and only against the portion of a path *below* the watched root. Scoping matters: an unscoped check runs over the whole absolute path, so a project at `/tmp/myproject` sits inside a component named `tmp` that the built-in rules ignore, and nothing under it is ever reported. Anything above the root is not the user's project and is not judged.
 
 ### `internal/crash`
 

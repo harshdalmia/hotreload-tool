@@ -78,6 +78,9 @@ type Filter struct {
 	ignoredExts map[string]bool
 	includeExts map[string]bool // empty means "allow every extension"
 	allowedDirs map[string]bool // IncludeDir overrides
+
+	// root, when set, scopes every decision to the watched tree. See WithRoot.
+	root string
 }
 
 // New builds a Filter from opts.
@@ -116,6 +119,46 @@ func Default() *Filter {
 	return New(Options{})
 }
 
+// WithRoot returns a copy of f that evaluates paths relative to root.
+//
+// This matters more than it looks. Directory names are matched per path
+// component, so without a root the check runs over the whole absolute path and
+// picks up directories the user never asked about. On Linux a project at
+// /tmp/myproject is inside a component named "tmp", which is on the built-in
+// ignore list, so every file in it was ignored and no reload ever fired. The
+// same applied to anyone whose checkout lived under a directory called build,
+// dist, temp, or vendor.
+//
+// Only what lies beneath the watched root is the user's project, so only that
+// part is judged. Paths outside the root fall back to being evaluated whole.
+//
+// The returned Filter shares the receiver's rule maps, which are never
+// mutated after construction.
+func (f *Filter) WithRoot(root string) *Filter {
+	scoped := *f
+	scoped.root = root
+	return &scoped
+}
+
+// scope reduces path to its portion below the root, so components above the
+// root cannot trigger ignore rules.
+func (f *Filter) scope(path string) string {
+	if f.root == "" {
+		return path
+	}
+	rel, err := filepath.Rel(f.root, path)
+	if err != nil {
+		// Mixed absolute/relative, or different volumes on Windows. Fall back
+		// to judging the path as given rather than guessing.
+		return path
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		// Outside the watched tree.
+		return path
+	}
+	return rel
+}
+
 // defaultFilter backs the package-level convenience functions.
 var defaultFilter = Default()
 
@@ -130,7 +173,7 @@ func ShouldIgnoreFile(path string) bool { return defaultFilter.ShouldIgnoreFile(
 // ShouldIgnoreDir reports whether path (or any component of it) belongs to a
 // directory that should be excluded from file watching.
 func (f *Filter) ShouldIgnoreDir(path string) bool {
-	normalized := filepath.ToSlash(filepath.Clean(path))
+	normalized := filepath.ToSlash(filepath.Clean(f.scope(path)))
 	for _, part := range strings.Split(normalized, "/") {
 		if part == "" || part == "." || part == ".." {
 			continue
