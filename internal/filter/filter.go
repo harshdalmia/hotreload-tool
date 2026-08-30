@@ -32,10 +32,21 @@ var defaultIgnoredDirs = []string{
 	"node_modules", ".npm", ".yarn", ".pnpm-store",
 	// Go / general build output
 	"vendor", "bin", "dist", "build",
+	// Rust and Maven build output. Worth calling out: cargo rewrites
+	// fingerprint files under target/ on every build, so watching it turns one
+	// save into an endless rebuild loop.
+	"target",
+	// .NET / C intermediate output
+	"obj",
+	// Python virtual environments. The dotted forms (.venv, .tox) are already
+	// covered by the hidden-directory rule; these are the bare ones.
+	"venv",
 	// IDE / editor metadata
 	".idea", ".vscode",
 	// Language caches
 	"__pycache__", ".cache",
+	// Test and coverage output
+	"coverage",
 	// Temporary directories
 	"tmp", "temp",
 }

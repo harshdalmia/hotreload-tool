@@ -469,3 +469,56 @@ func TestWatcher_RootUnderIgnoredDirectoryStillReportsEvents(t *testing.T) {
 		})
 	}
 }
+
+// TestWatcher_BuildOutputDoesNotRetrigger is the rebuild-loop guard. Build
+// tools write into their output directory on every run, so if that directory is
+// watched, one save becomes a build, which becomes another event, which becomes
+// another build. cargo is the clearest case: it rewrites fingerprint files
+// under target/ even when nothing changed.
+//
+// This is language-agnostic: what matters is that writes into a known output
+// directory produce no events.
+func TestWatcher_BuildOutputDoesNotRetrigger(t *testing.T) {
+	w, dir, _ := newTempWatcher(t)
+	time.Sleep(50 * time.Millisecond)
+
+	outputs := map[string]string{
+		"target":   filepath.Join("target", "debug", ".fingerprint", "app.json"),
+		"obj":      filepath.Join("obj", "Debug", "app.dll"),
+		"bin":      filepath.Join("bin", "server"),
+		"dist":     filepath.Join("dist", "bundle.js"),
+		"coverage": filepath.Join("coverage", "lcov.info"),
+	}
+	for _, rel := range outputs {
+		full := filepath.Join(dir, rel)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatalf("MkdirAll: %v", err)
+		}
+		if err := os.WriteFile(full, []byte("artefact"), 0o644); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+	}
+
+	// Sentinel: a real source edit must still be reported afterwards, proving
+	// the watcher is alive rather than simply broken.
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	deadline := time.After(3 * time.Second)
+	for {
+		select {
+		case evt, ok := <-w.Events():
+			if !ok {
+				t.Fatal("events channel closed unexpectedly")
+			}
+			if filepath.Base(evt.Path) == "main.go" {
+				return // reached the sentinel with no build-output events
+			}
+			t.Errorf("build output produced an event, which is how rebuild loops start: %s", evt.Path)
+		case <-deadline:
+			t.Error("sentinel event never arrived")
+			return
+		}
+	}
+}

@@ -375,3 +375,58 @@ func TestNoRoot_PreservesLegacyBehaviour(t *testing.T) {
 		t.Error("an unscoped filter should still apply rules to the path as given")
 	}
 }
+
+// TestDefaultIgnores_MultiLanguageBuildOutput covers the ecosystems the README
+// advertises. The Rust case is the one that actually bites: cargo rewrites
+// fingerprint files under target/ on every build, so watching it turns a single
+// save into an endless rebuild loop.
+func TestDefaultIgnores_MultiLanguageBuildOutput(t *testing.T) {
+	cases := []struct {
+		path string
+		why  string
+	}{
+		{"target/debug/myapp", "cargo build output"},
+		{"target/debug/.fingerprint/app-1a2b/lib-app.json", "cargo fingerprints, the rebuild-loop trigger"},
+		{"target/classes/App.class", "maven build output"},
+		{"obj/Debug/net8.0/app.dll", "dotnet intermediate output"},
+		{"venv/lib/python3.12/site-packages/x.py", "python virtualenv"},
+		{"coverage/lcov-report/index.html", "js coverage output"},
+		{"__pycache__/module.cpython-312.pyc", "python bytecode cache"},
+		{"node_modules/react/index.js", "js dependencies"},
+	}
+
+	for _, tc := range cases {
+		if !ShouldIgnoreFile(tc.path) {
+			t.Errorf("expected %q to be ignored (%s)", tc.path, tc.why)
+		}
+	}
+}
+
+// TestDefaultIgnores_DoNotOverreach: the additions must not swallow ordinary
+// source directories that merely resemble them.
+func TestDefaultIgnores_DoNotOverreach(t *testing.T) {
+	allowed := []string{
+		"targets/config.go",    // not "target"
+		"objects/store.go",     // not "obj"
+		"environment/setup.py", // not "venv"
+		"coverages/report.go",  // not "coverage"
+		"internal/target.go",   // a file named target, not a directory
+	}
+	for _, p := range allowed {
+		if ShouldIgnoreFile(p) {
+			t.Errorf("expected %q to be watched; the ignore list is too aggressive", p)
+		}
+	}
+}
+
+// TestIncludeDir_RescuesNewDefaultIgnores keeps the escape hatch working for
+// the directories added above, in case a project really does keep sources in
+// one of them.
+func TestIncludeDir_RescuesNewDefaultIgnores(t *testing.T) {
+	for _, name := range []string{"target", "obj", "venv", "coverage"} {
+		f := New(Options{IncludeDir: []string{name}})
+		if f.ShouldIgnoreDir(name) {
+			t.Errorf("--include-dir %s should make it watchable again", name)
+		}
+	}
+}
