@@ -114,6 +114,10 @@ type fakeServer struct {
 	exits     chan process.ExitInfo
 	startedCh chan int
 	stoppedCh chan int
+
+	// events, when set, records start and stop so ordering can be asserted
+	// against the pre/build/post stages.
+	events *recorder
 }
 
 func newFakeServer() *fakeServer {
@@ -135,8 +139,12 @@ func (f *fakeServer) Start(ctx context.Context) error {
 	n := f.starts
 	f.running = true
 	f.startCtxs = append(f.startCtxs, ctx)
+	rec := f.events
 	f.mu.Unlock()
 
+	if rec != nil {
+		rec.add("start")
+	}
 	select {
 	case f.startedCh <- n:
 	default:
@@ -149,8 +157,12 @@ func (f *fakeServer) Stop() {
 	f.stops++
 	n := f.stops
 	f.running = false
+	rec := f.events
 	f.mu.Unlock()
 
+	if rec != nil {
+		rec.add("stop")
+	}
 	select {
 	case f.stoppedCh <- n:
 	default:
@@ -190,11 +202,43 @@ func (f *fakeServer) simulateCrash(err error, uptime time.Duration) {
 
 // --- harness ----------------------------------------------------------------
 
+// recorder captures the order in which pipeline stages ran, so tests can assert
+// that pre runs before the build and post only after the server is up.
+type recorder struct {
+	mu  sync.Mutex
+	seq []string
+}
+
+func (r *recorder) add(name string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.seq = append(r.seq, name)
+}
+
+func (r *recorder) sequence() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.seq...)
+}
+
+// indexOf returns the position of the first occurrence of name, or -1.
+func indexOf(seq []string, name string) int {
+	for i, s := range seq {
+		if s == name {
+			return i
+		}
+	}
+	return -1
+}
+
 type harness struct {
 	ctrl    *Controller
 	watcher *fakeWatcher
 	builder *fakeBuilder
+	preCmd  *fakeBuilder
+	postCmd *fakeBuilder
 	server  *fakeServer
+	events  *recorder
 	cancel  context.CancelFunc
 	runErr  chan error
 
@@ -205,6 +249,8 @@ type harness struct {
 
 type harnessOpts struct {
 	builderFn  func(ctx context.Context, call int) error
+	preFn      func(ctx context.Context, call int) error
+	postFn     func(ctx context.Context, call int) error
 	detector   *crash.Detector
 	cfg        *config.Config
 	watcherErr error
@@ -227,9 +273,25 @@ func startHarness(t *testing.T, opts harnessOpts) *harness {
 		detector = crash.NewDefault()
 	}
 
+	rec := &recorder{}
+
+	// Wrap each stage so it records when it ran, then defers to the test's hook.
+	trace := func(name string, fn func(ctx context.Context, call int) error) func(context.Context, int) error {
+		return func(ctx context.Context, call int) error {
+			rec.add(name)
+			if fn == nil {
+				return nil
+			}
+			return fn(ctx, call)
+		}
+	}
+
 	fw := newFakeWatcher()
-	fb := newFakeBuilder(opts.builderFn)
+	fb := newFakeBuilder(trace("build", opts.builderFn))
+	fpre := newFakeBuilder(trace("pre", opts.preFn))
+	fpost := newFakeBuilder(trace("post", opts.postFn))
 	fsrv := newFakeServer()
+	fsrv.events = rec
 
 	c := &Controller{
 		cfg: cfg,
@@ -239,7 +301,9 @@ func startHarness(t *testing.T, opts harnessOpts) *harness {
 			}
 			return fw, nil
 		},
+		preCmd:   fpre,
 		builder:  fb,
+		postCmd:  fpost,
 		server:   fsrv,
 		detector: detector,
 	}
@@ -248,7 +312,10 @@ func startHarness(t *testing.T, opts harnessOpts) *harness {
 	runErr := make(chan error, 1)
 	go func() { runErr <- c.Run(ctx) }()
 
-	h := &harness{ctrl: c, watcher: fw, builder: fb, server: fsrv, cancel: cancel, runErr: runErr}
+	h := &harness{
+		ctrl: c, watcher: fw, builder: fb, preCmd: fpre, postCmd: fpost,
+		server: fsrv, events: rec, cancel: cancel, runErr: runErr,
+	}
 	t.Cleanup(func() { h.shutdown(t) })
 	return h
 }
@@ -660,5 +727,199 @@ func TestNew_WiresRealDependencies(t *testing.T) {
 	defer w.Close()
 	if w.WatchedCount() < 1 {
 		t.Errorf("WatchedCount() = %d, want at least 1", w.WatchedCount())
+	}
+}
+
+// --- pre and post hooks -----------------------------------------------------
+
+// TestRun_HookOrdering pins the pipeline order. pre must run before the build,
+// because code generators produce source the build then compiles, and post must
+// run only once the server is actually up.
+func TestRun_HookOrdering(t *testing.T) {
+	h := startHarness(t, harnessOpts{})
+	awaitInt(t, h.builder.started, "initial build")
+	awaitInt(t, h.server.startedCh, "initial server start")
+
+	// Wait for post, which is the last stage.
+	awaitStable(t, 50*time.Millisecond, func() error {
+		if h.postCmd.count() < 1 {
+			return errors.New("post-cmd has not run yet")
+		}
+		return nil
+	})
+
+	seq := h.events.sequence()
+	pre, build, start, post := indexOf(seq, "pre"), indexOf(seq, "build"), indexOf(seq, "start"), indexOf(seq, "post")
+
+	for name, idx := range map[string]int{"pre": pre, "build": build, "start": start, "post": post} {
+		if idx < 0 {
+			t.Fatalf("%s never ran; sequence was %v", name, seq)
+		}
+	}
+	if pre >= build || build >= start || start >= post {
+		t.Errorf("wrong order: want pre < build < start < post, got %v", seq)
+	}
+}
+
+// TestRun_PreCmdFailureAbortsWithoutTouchingServer: a failing code generator
+// means the build would compile stale or missing sources, so the reload should
+// stop dead and leave the working server alone.
+func TestRun_PreCmdFailureAbortsWithoutTouchingServer(t *testing.T) {
+	h := startHarness(t, harnessOpts{
+		preFn: func(_ context.Context, call int) error {
+			if call == 1 {
+				return nil // let the initial reload succeed
+			}
+			return errors.New("templ generate failed")
+		},
+	})
+	awaitInt(t, h.builder.started, "initial build")
+	awaitInt(t, h.server.startedCh, "initial server start")
+	buildsBefore := h.builder.count()
+	_, stopsBefore := h.server.counts()
+
+	h.watcher.emit("main.go")
+
+	awaitStable(t, 250*time.Millisecond, func() error {
+		if h.preCmd.count() < 2 {
+			return errors.New("pre-cmd has not run a second time yet")
+		}
+		if n := h.builder.count(); n != buildsBefore {
+			return fmt.Errorf("build count = %d, want %d: a failed pre-cmd must not build", n, buildsBefore)
+		}
+		starts, stops := h.server.counts()
+		if starts != 1 {
+			return fmt.Errorf("server starts = %d, want 1", starts)
+		}
+		if stops != stopsBefore {
+			return fmt.Errorf("server stops = %d, want %d: the live server must be left alone", stops, stopsBefore)
+		}
+		return nil
+	})
+}
+
+// TestRun_PostCmdFailureIsNonFatal: the server is already serving by the time
+// post runs, so a failure there must not tear it down.
+func TestRun_PostCmdFailureIsNonFatal(t *testing.T) {
+	h := startHarness(t, harnessOpts{
+		postFn: func(_ context.Context, _ int) error {
+			return errors.New("health check failed")
+		},
+	})
+	awaitInt(t, h.builder.started, "initial build")
+	awaitInt(t, h.server.startedCh, "initial server start")
+
+	awaitStable(t, 250*time.Millisecond, func() error {
+		if h.postCmd.count() < 1 {
+			return errors.New("post-cmd has not run yet")
+		}
+		if !h.server.IsRunning() {
+			return errors.New("server should still be running after a failed post-cmd")
+		}
+		if _, stops := h.server.counts(); stops > 1 {
+			return fmt.Errorf("server was stopped %d times; a failed post-cmd must not stop it", stops)
+		}
+		return nil
+	})
+
+	// And the loop is still healthy.
+	h.watcher.emit("main.go")
+	awaitInt(t, h.builder.started, "rebuild after a failed post-cmd")
+}
+
+// TestRun_PostCmdRunsUnderRootContext: post-cmd is started after the server, so
+// it must not inherit a build context that the next save cancels.
+func TestRun_PostCmdRunsUnderRootContext(t *testing.T) {
+	captured := make(chan context.Context, 4)
+	h := startHarness(t, harnessOpts{
+		postFn: func(ctx context.Context, _ int) error {
+			select {
+			case captured <- ctx:
+			default:
+			}
+			return nil
+		},
+	})
+	awaitInt(t, h.builder.started, "initial build")
+	awaitInt(t, h.server.startedCh, "initial server start")
+
+	var postCtx context.Context
+	select {
+	case postCtx = <-captured:
+	case <-time.After(waitTimeout):
+		t.Fatal("post-cmd never ran")
+	}
+
+	// This cancels the build context.
+	h.watcher.emit("main.go")
+	awaitInt(t, h.builder.started, "rebuild")
+
+	if err := postCtx.Err(); err != nil {
+		t.Errorf("post-cmd context was cancelled by a file event: %v", err)
+	}
+}
+
+// TestRun_HooksRunOnEveryReload guards against the hooks only firing at startup.
+func TestRun_HooksRunOnEveryReload(t *testing.T) {
+	h := startHarness(t, harnessOpts{})
+	awaitInt(t, h.builder.started, "initial build")
+	awaitInt(t, h.server.startedCh, "initial server start")
+
+	h.watcher.emit("main.go")
+	awaitInt(t, h.builder.started, "rebuild")
+	awaitInt(t, h.server.startedCh, "restart")
+
+	awaitStable(t, 100*time.Millisecond, func() error {
+		if n := h.preCmd.count(); n < 2 {
+			return fmt.Errorf("pre-cmd ran %d times, want at least 2", n)
+		}
+		if n := h.postCmd.count(); n < 2 {
+			return fmt.Errorf("post-cmd ran %d times, want at least 2", n)
+		}
+		return nil
+	})
+}
+
+// TestNew_WiresHooksAndPoller checks the production constructor builds the full
+// pipeline, including choosing the poller when asked.
+func TestNew_WiresHooksAndPoller(t *testing.T) {
+	cfg := config.Default()
+	cfg.Root = t.TempDir()
+	cfg.Exec = "echo exec"
+	cfg.PreCmd = "echo pre"
+	cfg.PostCmd = "echo post"
+	cfg.Poll = true
+
+	c := New(cfg)
+	if c.preCmd == nil || c.postCmd == nil {
+		t.Fatal("New left a hook unset")
+	}
+
+	w, err := c.newWatcher()
+	if err != nil {
+		t.Fatalf("newWatcher(): %v", err)
+	}
+	defer w.Close()
+
+	if _, ok := w.(*watcher.Poller); !ok {
+		t.Errorf("with Poll set, newWatcher returned %T, want *watcher.Poller", w)
+	}
+}
+
+// TestNew_UsesFsnotifyByDefault is the complement: polling is opt-in.
+func TestNew_UsesFsnotifyByDefault(t *testing.T) {
+	cfg := config.Default()
+	cfg.Root = t.TempDir()
+	cfg.Exec = "echo exec"
+
+	c := New(cfg)
+	w, err := c.newWatcher()
+	if err != nil {
+		t.Fatalf("newWatcher(): %v", err)
+	}
+	defer w.Close()
+
+	if _, ok := w.(*watcher.Watcher); !ok {
+		t.Errorf("without Poll, newWatcher returned %T, want *watcher.Watcher", w)
 	}
 }

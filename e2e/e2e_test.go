@@ -460,3 +460,143 @@ func TestE2E_NoBuildCommandStillRestarts(t *testing.T) {
 	}
 	f.requireAlive(t, "V1")
 }
+
+// TestE2E_PollModeReloads exercises the polling watcher against a real build and
+// a real process. Polling is an entirely separate detection path, so the basic
+// promise has to be proved for it independently: it is the mode people will fall
+// back to inside Docker, where notifications never arrive.
+func TestE2E_PollModeReloads(t *testing.T) {
+	skipIfShort(t)
+	f := newFixture(t)
+
+	f.cfg.Poll = true
+	f.cfg.PollInterval = 100 * time.Millisecond
+	if err := f.cfg.Validate(); err != nil {
+		t.Fatalf("poll config should be valid: %v", err)
+	}
+	f.run(t)
+
+	f.awaitVersion(t, "V1", 90*time.Second)
+	if got := f.startCount(); got != 1 {
+		t.Errorf("server start count = %d, want 1", got)
+	}
+
+	f.writeServer(t, "V2", keepRunning)
+	f.awaitVersion(t, "V2", 90*time.Second)
+	f.requireAlive(t, "V2")
+}
+
+// TestE2E_PollModeIgnoresBuildOutput is the rebuild-loop guard for poll mode.
+// Polling rescans everything, so if the filter were not consulted the build's
+// own artefacts would retrigger it forever.
+func TestE2E_PollModeIgnoresBuildOutput(t *testing.T) {
+	skipIfShort(t)
+	f := newFixture(t)
+
+	f.cfg.Poll = true
+	f.cfg.PollInterval = 100 * time.Millisecond
+	f.run(t)
+
+	f.awaitVersion(t, "V1", 90*time.Second)
+	startsBefore := f.startCount()
+
+	// Write into directories a build tool would own.
+	for _, rel := range []string{
+		filepath.Join("target", "debug", "app"),
+		filepath.Join("bin", "app"),
+		filepath.Join("dist", "bundle.js"),
+	} {
+		full := filepath.Join(f.root, rel)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatalf("MkdirAll: %v", err)
+		}
+		if err := os.WriteFile(full, []byte("artefact"), 0o644); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+	}
+	time.Sleep(2 * time.Second) // several poll ticks
+
+	if got := f.startCount(); got != startsBefore {
+		t.Errorf("server start count = %d, want %d; build output must not retrigger a poll reload",
+			got, startsBefore)
+	}
+	f.requireAlive(t, "V1")
+}
+
+// TestE2E_HooksRunAroundTheReload proves the hooks actually execute real shell
+// commands in the right order, rather than only being wired up correctly.
+func TestE2E_HooksRunAroundTheReload(t *testing.T) {
+	skipIfShort(t)
+	f := newFixture(t)
+
+	// Hook output goes outside the watched tree, so writing it cannot itself
+	// trigger another reload.
+	scratch := t.TempDir()
+	preMarker := filepath.Join(scratch, "pre.txt")
+	postMarker := filepath.Join(scratch, "post.txt")
+
+	// `echo x > file` behaves the same under sh and cmd.
+	f.cfg.PreCmd = "echo pre > " + shellQuote(preMarker)
+	f.cfg.PostCmd = "echo post > " + shellQuote(postMarker)
+	f.run(t)
+
+	f.awaitVersion(t, "V1", 90*time.Second)
+
+	// post-cmd runs after the server is up, so both markers should appear.
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		_, preErr := os.Stat(preMarker)
+		_, postErr := os.Stat(postMarker)
+		if preErr == nil && postErr == nil {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	if _, err := os.Stat(preMarker); err != nil {
+		t.Errorf("pre-cmd did not run: %v", err)
+	}
+	if _, err := os.Stat(postMarker); err != nil {
+		t.Errorf("post-cmd did not run: %v", err)
+	}
+
+	// The post marker must not predate the pre marker.
+	preInfo, err1 := os.Stat(preMarker)
+	postInfo, err2 := os.Stat(postMarker)
+	if err1 == nil && err2 == nil && postInfo.ModTime().Before(preInfo.ModTime()) {
+		t.Errorf("post-cmd (%v) ran before pre-cmd (%v)", postInfo.ModTime(), preInfo.ModTime())
+	}
+}
+
+// TestE2E_FailingPreCmdNeverBuilds is the pre-hook equivalent of the
+// build-failure guarantee. A failing code generator means the build would
+// compile missing or stale sources, so the reload must stop before it starts.
+//
+// The failure semantics with a live server to protect are covered precisely by
+// TestRun_PreCmdFailureAbortsWithoutTouchingServer; this checks the real shell
+// path, that a non-zero hook genuinely aborts the pipeline.
+func TestE2E_FailingPreCmdNeverBuilds(t *testing.T) {
+	skipIfShort(t)
+	f := newFixture(t)
+
+	f.cfg.PreCmd = exitFailureCmd()
+	f.run(t)
+
+	// Nothing should ever come up: the pre hook fails on the initial reload.
+	time.Sleep(5 * time.Second)
+
+	if got := f.startCount(); got != 0 {
+		t.Errorf("server started %d times; a failing pre-cmd must abort before the build", got)
+	}
+	if _, _, ok := f.heartbeat(); ok {
+		t.Error("a server is running despite the pre-cmd failing")
+	}
+}
+
+// exitFailureCmd is a shell command that always exits non-zero.
+func exitFailureCmd() string {
+	if isWindows() {
+		return "exit /b 1"
+	}
+	return "exit 1"
+}

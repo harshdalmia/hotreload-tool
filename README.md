@@ -60,12 +60,16 @@ hotreload --exec "<cmd>" [--build "<cmd>"] [flags]
 
   --exec          Command that runs your server.                      Required.
   --build         Command run when a change is detected.              Optional.
+  --pre-cmd       Command run before each build.                      Optional.
+  --post-cmd      Command run after the server starts.                Optional.
   --root          Directory watched recursively.                      Default: .
   --debounce      Quiet window after the last change.                 Default: 150ms
   --kill-delay    Grace period before a process is force-killed.      Default: 5s
   --include-ext   Only rebuild for these extensions, comma-separated. Default: all
   --exclude-dir   Extra directory names to ignore, comma-separated.
   --include-dir   Directory names to watch despite being ignored.
+  --poll          Detect changes by scanning instead of notifications.
+  --poll-interval How often to rescan in --poll mode.                 Default: 500ms
   --config        Path to a config file.                              Default: ./.hotreload.toml
   --verbose       Debug logging.
   --version       Print version information and exit.
@@ -109,6 +113,35 @@ hotreload --build "make build" --exec "./bin/app" --include-ext .go,.tmpl
 
 Now editing `README.md` costs nothing and editing a `.go` file reloads.
 
+### Code generators and post-start hooks
+
+`--pre-cmd` runs before every build, which is where code generation belongs:
+
+```bash
+hotreload \
+  --pre-cmd "templ generate" \
+  --build   "go build -o ./bin/app ./cmd/app" \
+  --exec    "./bin/app"
+```
+
+A failing `--pre-cmd` aborts the reload and leaves the running server alone, exactly like a failed build — if the generator didn't run, the build would only compile stale sources.
+
+`--post-cmd` runs after the server has started, for things like seeding a database or pinging a health check. A failure there is reported but changes nothing, because the server is already up.
+
+### Working where file notifications don't
+
+inotify does not fire for writes made on the host side of a Docker bind mount, and is unreliable across some network filesystems and WSL configurations. A notification-based reloader starts cleanly in those environments, reports the directories it is watching, and then simply never reloads.
+
+`--poll` rescans the tree instead:
+
+```bash
+hotreload --poll --build "go build -o ./bin/app ./cmd/app" --exec "./bin/app"
+```
+
+It costs a walk per interval (500ms by default, `--poll-interval` to change it) and reload latency is bounded by that interval. In exchange it works everywhere, needs no per-directory watch handles so large trees cost nothing extra, and has no window between a directory being created and its watch being armed.
+
+hotreload also falls back to polling automatically if notifications can't be set up at all, such as when you've exhausted the inotify watch limit. It cannot detect the other failure mode, where watches are accepted but events never arrive, so inside Docker you have to ask for `--poll` yourself.
+
 ### Watching a directory that is ignored by default
 
 `bin`, `dist`, `build`, `tmp`, `temp`, `vendor`, `node_modules`, and every dot-directory are skipped so build output cannot trigger a rebuild loop. If your sources genuinely live in one of them, opt back in:
@@ -122,15 +155,19 @@ hotreload --build "make" --exec "./out/app" --include-dir build
 If `.hotreload.toml` exists in the working directory it is loaded automatically. Precedence runs defaults, then the config file, then flags you passed explicitly — a flag left at its default never overrides the file.
 
 ```toml
-root        = "."
-build       = "go build -o ./bin/app ./cmd/app"
-exec        = "./bin/app"
-debounce    = "150ms"
-kill_delay  = "5s"
-include_ext = [".go", ".tmpl"]
-exclude_dir = ["testdata"]
-include_dir = []
-verbose     = false
+root          = "."
+build         = "go build -o ./bin/app ./cmd/app"
+exec          = "./bin/app"
+pre_cmd       = "templ generate"
+post_cmd      = ""
+debounce      = "150ms"
+kill_delay    = "5s"
+include_ext   = [".go", ".tmpl"]
+exclude_dir   = ["testdata"]
+include_dir   = []
+poll          = false
+poll_interval = "500ms"
+verbose       = false
 ```
 
 See [.hotreload.example.toml](./.hotreload.example.toml) for the annotated version. Unknown keys are rejected rather than ignored, so a typo fails loudly instead of silently doing nothing.
@@ -152,6 +189,8 @@ See [.hotreload.example.toml](./.hotreload.example.toml) for the annotated versi
 **Build output never triggers a rebuild.** `target`, `obj`, `bin`, `dist`, `build`, `coverage`, `node_modules`, `vendor`, `venv` and `__pycache__` are ignored by default, so a build writing its own artefacts cannot start a loop. Use `--include-dir` if your sources genuinely live in one of them.
 
 **No build step is fine.** Omit `--build` and a change restarts your server directly.
+
+**Output is labelled.** Your server's lines are tagged `[app]`, the build's `[build]`, and hooks `[pre]` and `[post]`, dimmed so they stay out of the way. When something panics you can see at a glance whose output you're reading. Colour is disabled automatically when output isn't a terminal, and honours `NO_COLOR`.
 
 **New directories are picked up while running.** Including ones that arrive already populated — a branch switch, an unzip, a `cp -r` — where the files were created before any watch existed.
 

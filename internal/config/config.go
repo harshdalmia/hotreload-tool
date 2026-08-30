@@ -27,6 +27,11 @@ const FileName = ".hotreload.toml"
 const (
 	DefaultDebounce  = 150 * time.Millisecond
 	DefaultKillDelay = 5 * time.Second
+
+	// DefaultPollInterval balances responsiveness against the cost of walking
+	// the tree. A warm-cache walk of a few thousand files takes single-digit
+	// milliseconds, so this is cheap even on a large project.
+	DefaultPollInterval = 500 * time.Millisecond
 )
 
 // Config is the fully-resolved configuration used by the controller.
@@ -41,6 +46,25 @@ type Config struct {
 
 	// Exec is the shell command that runs the built artefact.
 	Exec string
+
+	// PreCmd runs before every build. Code generators belong here: templ
+	// generate, sqlc generate, protoc. A failure aborts the reload and leaves
+	// the running server alone, exactly like a failed build, because generated
+	// code the build depends on is missing.
+	PreCmd string
+
+	// PostCmd runs after the server has started. Intended for side effects
+	// such as seeding a database or pinging a health check. A failure is
+	// reported but changes nothing, since the server is already up.
+	PostCmd string
+
+	// Poll replaces filesystem notifications with periodic scanning. Needed
+	// where notifications do not arrive at all: Docker bind mounts, some
+	// network filesystems, and certain WSL configurations.
+	Poll bool
+
+	// PollInterval is how often the tree is rescanned in poll mode.
+	PollInterval time.Duration
 
 	// Debounce is the quiet window after the last file event before a
 	// rebuild is triggered.
@@ -70,24 +94,29 @@ type Config struct {
 // Default returns the built-in configuration.
 func Default() Config {
 	return Config{
-		Root:      ".",
-		Debounce:  DefaultDebounce,
-		KillDelay: DefaultKillDelay,
+		Root:         ".",
+		Debounce:     DefaultDebounce,
+		KillDelay:    DefaultKillDelay,
+		PollInterval: DefaultPollInterval,
 	}
 }
 
 // fileConfig mirrors Config for TOML decoding. Every scalar is a pointer so
 // that "absent" is distinguishable from "set to the zero value".
 type fileConfig struct {
-	Root       *string  `toml:"root"`
-	Build      *string  `toml:"build"`
-	Exec       *string  `toml:"exec"`
-	Debounce   *string  `toml:"debounce"`
-	KillDelay  *string  `toml:"kill_delay"`
-	IncludeExt []string `toml:"include_ext"`
-	ExcludeDir []string `toml:"exclude_dir"`
-	IncludeDir []string `toml:"include_dir"`
-	Verbose    *bool    `toml:"verbose"`
+	Root         *string  `toml:"root"`
+	Build        *string  `toml:"build"`
+	Exec         *string  `toml:"exec"`
+	PreCmd       *string  `toml:"pre_cmd"`
+	PostCmd      *string  `toml:"post_cmd"`
+	Debounce     *string  `toml:"debounce"`
+	KillDelay    *string  `toml:"kill_delay"`
+	IncludeExt   []string `toml:"include_ext"`
+	ExcludeDir   []string `toml:"exclude_dir"`
+	IncludeDir   []string `toml:"include_dir"`
+	Poll         *bool    `toml:"poll"`
+	PollInterval *string  `toml:"poll_interval"`
+	Verbose      *bool    `toml:"verbose"`
 }
 
 // FindFile reports the path of the config file to use when the user did not
@@ -127,6 +156,22 @@ func (c *Config) ApplyFile(path string) error {
 	}
 	if fc.Exec != nil {
 		c.Exec = *fc.Exec
+	}
+	if fc.PreCmd != nil {
+		c.PreCmd = *fc.PreCmd
+	}
+	if fc.PostCmd != nil {
+		c.PostCmd = *fc.PostCmd
+	}
+	if fc.Poll != nil {
+		c.Poll = *fc.Poll
+	}
+	if fc.PollInterval != nil {
+		d, err := time.ParseDuration(*fc.PollInterval)
+		if err != nil {
+			return fmt.Errorf("config %s: poll_interval: %w", path, err)
+		}
+		c.PollInterval = d
 	}
 	if fc.Debounce != nil {
 		d, err := time.ParseDuration(*fc.Debounce)
@@ -187,6 +232,9 @@ func (c *Config) Validate() error {
 	}
 	if c.KillDelay <= 0 {
 		return fmt.Errorf("kill-delay must be positive, got %s", c.KillDelay)
+	}
+	if c.PollInterval <= 0 {
+		return fmt.Errorf("poll-interval must be positive, got %s", c.PollInterval)
 	}
 	info, err := os.Stat(c.Root)
 	if err != nil {

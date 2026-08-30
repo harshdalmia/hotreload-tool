@@ -23,6 +23,26 @@ build = "go build -o ./bin/app ./cmd/app"
 # Command that runs the built artefact.
 exec = "./bin/app"
 
+# Runs before every build. Code generation belongs here: templ generate,
+# sqlc generate, protoc. A failure aborts the reload and leaves the running
+# server alone, exactly like a failed build, because the build would otherwise
+# compile stale or missing generated code.
+pre_cmd = ""
+
+# Runs after the server has started. Intended for side effects such as seeding a
+# database or pinging a health check. A failure is reported but changes nothing,
+# since the server is already up.
+post_cmd = ""
+
+# Detect changes by rescanning the tree instead of subscribing to filesystem
+# notifications. Turn this on where notifications never arrive: the host side of
+# a Docker bind mount, some network filesystems, certain WSL setups. Without it
+# hotreload appears to start correctly there and then simply never reloads.
+poll = false
+
+# How often to rescan in poll mode. Reload latency is bounded by this.
+poll_interval = "500ms"
+
 # Quiet window after the last change before rebuilding. Editors emit several
 # events per save, so a small window collapses them into one reload.
 # Durations use Go syntax: "150ms", "1s", "2m".

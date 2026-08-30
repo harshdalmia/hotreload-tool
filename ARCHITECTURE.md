@@ -17,11 +17,13 @@
    - cancel the in-flight build immediately
    - feed the debouncer
 4. After the quiet window (default 150 ms), trigger one rebuild.
-5. If the build succeeds:
+5. Run `--pre-cmd` if set, then the build. A failing pre-command aborts the reload without touching the server, since the build would only compile what the generator failed to produce.
+6. If the build succeeds:
    - bail out if a newer change arrived while compiling, leaving the current server untouched
    - otherwise stop the previous server process tree and start the new one
-6. Independently, if the server exits without being asked to, restart it.
-7. Stream build and server output continuously.
+   - run `--post-cmd` if set; a failure here is reported but changes nothing, since the server is already up
+7. Independently, if the server exits without being asked to, restart it.
+8. Stream build and server output continuously, tagged by source.
 
 ## Component model
 
@@ -48,7 +50,20 @@
 - Watches `Server.Exits()` so a crash is handled without a file event.
 - Triggers an initial build immediately on startup.
 
+### `internal/logstream`
+
+- Tags child process output so `[app]`, `[build]`, `[pre]` and `[post]` lines are distinguishable at a glance.
+- Writers are line-buffered because processes write in arbitrary chunks and a prefix must only appear at the start of a line. A `Sink` owns the underlying stream and its lock, so two tagged streams cannot interleave mid-line.
+- Colour is disabled unless the target is a character device, and honours `NO_COLOR` and `TERM=dumb`. On Windows it enables virtual terminal processing first: a console without it prints escape sequences literally, so the prefixes would arrive as visible junk.
+
 ### `internal/watcher`
+
+- Two interchangeable implementations behind the controller's `Watcher` interface: `Watcher`, backed by fsnotify, and `Poller`, which rescans on an interval.
+- Polling exists because notifications are not always available. They do not fire for writes on the host side of a Docker bind mount, nor reliably across some network filesystems and WSL setups, and there a notification-based watcher starts cleanly and then never reloads. It also avoids per-directory watch handles entirely, so large trees cost nothing extra, and has no window between a directory being created and its watch being armed.
+- Polling fingerprints files on modification time and size. A content hash would also catch a write that preserves both, but it would mean reading every file on every tick, which is the cost polling exists to keep small.
+- The first scan establishes a baseline and emits nothing, since the controller triggers an initial build of its own.
+
+### `internal/watcher` (fsnotify path)
 
 - Wraps `fsnotify` with recursive watch behaviour.
 - Adds watches for newly created directories while running.

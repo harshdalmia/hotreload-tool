@@ -50,8 +50,12 @@ func run(args []string) error {
 		root       = fs.String("root", defaults.Root, "Directory to watch recursively for changes")
 		build      = fs.String("build", "", "Command used to build the project when a change is detected (omit for interpreted projects)")
 		execCmd    = fs.String("exec", "", "Command used to run the server (required)")
+		preCmd     = fs.String("pre-cmd", "", "Command run before each build, e.g. a code generator (failure aborts the reload)")
+		postCmd    = fs.String("post-cmd", "", "Command run after the server starts (failure is reported but changes nothing)")
 		debounceFl = fs.Duration("debounce", defaults.Debounce, "Quiet window after the last change before rebuilding")
 		killDelay  = fs.Duration("kill-delay", defaults.KillDelay, "Time a process gets to exit gracefully before being force-killed")
+		poll       = fs.Bool("poll", false, "Detect changes by scanning instead of filesystem notifications (Docker bind mounts, network shares, WSL)")
+		pollEvery  = fs.Duration("poll-interval", defaults.PollInterval, "How often to rescan the tree in --poll mode")
 		configPath = fs.String("config", "", "Path to a config file (default: ./"+config.FileName+" if present)")
 		verbose    = fs.Bool("verbose", false, "Enable verbose/debug logging")
 		showVer    = fs.Bool("version", false, "Print version information and exit")
@@ -96,10 +100,18 @@ func run(args []string) error {
 			cfg.Build = *build
 		case "exec":
 			cfg.Exec = *execCmd
+		case "pre-cmd":
+			cfg.PreCmd = *preCmd
+		case "post-cmd":
+			cfg.PostCmd = *postCmd
 		case "debounce":
 			cfg.Debounce = *debounceFl
 		case "kill-delay":
 			cfg.KillDelay = *killDelay
+		case "poll":
+			cfg.Poll = *poll
+		case "poll-interval":
+			cfg.PollInterval = *pollEvery
 		case "include-ext":
 			cfg.IncludeExt = includeExt
 		case "exclude-dir":
@@ -140,6 +152,15 @@ func run(args []string) error {
 	}
 	if len(cfg.IncludeDir) > 0 {
 		attrs = append(attrs, "include_dir", strings.Join(cfg.IncludeDir, ","))
+	}
+	if cfg.PreCmd != "" {
+		attrs = append(attrs, "pre_cmd", cfg.PreCmd)
+	}
+	if cfg.PostCmd != "" {
+		attrs = append(attrs, "post_cmd", cfg.PostCmd)
+	}
+	if cfg.Poll {
+		attrs = append(attrs, "poll", true, "poll_interval", cfg.PollInterval)
 	}
 	slog.Info("hotreload starting", attrs...)
 
@@ -198,15 +219,19 @@ Configuration file:
   If ./%[1]s exists it is loaded automatically. Flags you pass
   explicitly override it. Durations use Go syntax ("150ms", "2s").
 
-    root        = "."
-    build       = "go build -o ./bin/app ./cmd/app"
-    exec        = "./bin/app"
-    debounce    = "150ms"
-    kill_delay  = "5s"
-    include_ext = [".go", ".html"]
-    exclude_dir = ["testdata"]
-    include_dir = []
-    verbose     = false
+    root          = "."
+    build         = "go build -o ./bin/app ./cmd/app"
+    exec          = "./bin/app"
+    pre_cmd       = "templ generate"
+    post_cmd      = ""
+    debounce      = "150ms"
+    kill_delay    = "5s"
+    include_ext   = [".go", ".html"]
+    exclude_dir   = ["testdata"]
+    include_dir   = []
+    poll          = false
+    poll_interval = "500ms"
+    verbose       = false
 
 Examples:
   # Watch the current tree, rebuild and restart on any change
@@ -221,6 +246,12 @@ Examples:
   # Same, but let a syntax check stand in for the build so a broken save
   # leaves the running server alone
   hotreload --build "python -m compileall -q ." --exec "python app.py" --include-ext .py
+
+  # Run a code generator before every build
+  hotreload --pre-cmd "templ generate" --build "go build -o ./bin/app ./cmd/app" --exec "./bin/app"
+
+  # Inside Docker, or on a network share, where notifications never arrive
+  hotreload --poll --build "go build -o ./bin/app ./cmd/app" --exec "./bin/app"
 
   # Sources live in a directory hotreload ignores by default
   hotreload --build "make" --exec "./out/app" --include-dir build

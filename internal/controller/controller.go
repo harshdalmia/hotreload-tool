@@ -39,6 +39,7 @@ package controller
 import (
 	"context"
 	"log/slog"
+	"os"
 	"sync"
 	"time"
 
@@ -46,6 +47,7 @@ import (
 	"github.com/harshdalmia/hotreload-tool/internal/crash"
 	"github.com/harshdalmia/hotreload-tool/internal/debounce"
 	"github.com/harshdalmia/hotreload-tool/internal/filter"
+	"github.com/harshdalmia/hotreload-tool/internal/logstream"
 	"github.com/harshdalmia/hotreload-tool/internal/process"
 	"github.com/harshdalmia/hotreload-tool/internal/watcher"
 )
@@ -93,7 +95,9 @@ type Controller struct {
 	// fake without touching the file system.
 	newWatcher func() (Watcher, error)
 
+	preCmd   Builder
 	builder  Builder
+	postCmd  Builder
 	server   Server
 	detector *crash.Detector
 }
@@ -106,18 +110,66 @@ func New(cfg config.Config) *Controller {
 		IncludeDir: cfg.IncludeDir,
 	})
 
+	// One sink per underlying stream, shared by every prefixed writer, so two
+	// processes cannot interleave halfway through a line.
+	colour := logstream.SupportsColour(os.Stdout)
+	outSink := logstream.NewSink(os.Stdout)
+	errSink := logstream.NewSink(os.Stderr)
+
+	streams := func(label string) process.Streams {
+		prefix := logstream.Prefix(label, colour)
+		return process.Streams{
+			Stdout: outSink.Writer(prefix),
+			Stderr: errSink.Writer(prefix),
+		}
+	}
+
 	return &Controller{
-		cfg: cfg,
-		newWatcher: func() (Watcher, error) {
-			w, err := watcher.New(cfg.Root, f)
-			if err != nil {
-				return nil, err
-			}
-			return w, nil
-		},
-		builder:  process.NewBuilder(cfg.Build),
-		server:   process.NewServerWithKillDelay(cfg.Exec, cfg.KillDelay),
+		cfg:        cfg,
+		newWatcher: watcherFactory(cfg, f),
+		preCmd: process.NewBuilder(cfg.PreCmd,
+			process.WithLabel("pre"), process.WithBuilderStreams(streams("pre"))),
+		builder: process.NewBuilder(cfg.Build,
+			process.WithLabel("build"), process.WithBuilderStreams(streams("build"))),
+		postCmd: process.NewBuilder(cfg.PostCmd,
+			process.WithLabel("post"), process.WithBuilderStreams(streams("post"))),
+		server: process.NewServer(cfg.Exec,
+			process.WithKillDelay(cfg.KillDelay), process.WithStreams(streams("app"))),
 		detector: crash.NewDefault(),
+	}
+}
+
+// watcherFactory chooses between filesystem notifications and polling.
+//
+// Polling is used when asked for explicitly, and also as a fallback when
+// notifications cannot be set up at all. The fallback matters because the
+// alternative is refusing to start: a developer who has hit the inotify watch
+// limit is better served by a slightly slower reload than by no tool.
+//
+// Note that it cannot detect the other failure mode, where notifications are
+// accepted but never delivered, as happens on Docker bind mounts. Nothing
+// reports that condition, so --poll has to be requested.
+func watcherFactory(cfg config.Config, f *filter.Filter) func() (Watcher, error) {
+	newPoller := func() (Watcher, error) {
+		p, err := watcher.NewPoller(cfg.Root, f, cfg.PollInterval)
+		if err != nil {
+			return nil, err
+		}
+		return p, nil
+	}
+
+	if cfg.Poll {
+		return newPoller
+	}
+
+	return func() (Watcher, error) {
+		w, err := watcher.New(cfg.Root, f)
+		if err != nil {
+			slog.Warn("filesystem notifications unavailable, falling back to polling",
+				"err", err, "interval", cfg.PollInterval)
+			return newPoller()
+		}
+		return w, nil
 	}
 }
 
@@ -248,6 +300,18 @@ func (c *Controller) Run(ctx context.Context) error {
 func (c *Controller) buildAndRestart(rootCtx, bCtx context.Context, done chan struct{}) {
 	defer close(done)
 
+	// Pre hook first: code generators run here, and the build below may depend
+	// on what they produce. A failure is treated exactly like a build failure,
+	// leaving the running server untouched.
+	if err := c.preCmd.Build(bCtx); err != nil {
+		if bCtx.Err() != nil {
+			slog.Debug("pre-cmd superseded by newer change")
+		} else {
+			slog.Error("pre-cmd failed - skipping build, server left running", "err", err)
+		}
+		return
+	}
+
 	if err := c.builder.Build(bCtx); err != nil {
 		if bCtx.Err() != nil {
 			slog.Debug("build superseded by newer change")
@@ -279,6 +343,13 @@ func (c *Controller) buildAndRestart(rootCtx, bCtx context.Context, done chan st
 
 	if err := c.server.Start(rootCtx); err != nil {
 		slog.Error("failed to start server", "err", err)
+		return
+	}
+
+	// Post hook last. The server is already up, so a failure here is worth
+	// reporting but must not tear anything down: the reload succeeded.
+	if err := c.postCmd.Build(rootCtx); err != nil {
+		slog.Warn("post-cmd failed; the server is running regardless", "err", err)
 	}
 }
 
