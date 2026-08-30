@@ -1,0 +1,46 @@
+# Example hotreload configuration.
+#
+# Copy this to .hotreload.toml in your project root and hotreload will pick it
+# up automatically. Flags you pass on the command line override anything set
+# here, so you can keep the common case in the file and still say
+# `hotreload --verbose` for a one-off run.
+#
+# Every key is optional except build and exec.
+
+# Directory watched recursively. Relative paths resolve against the working
+# directory hotreload is started from.
+root = "."
+
+# Command run when a change is detected. Anything your shell understands works,
+# including pipes and redirects.
+build = "go build -o ./bin/app ./cmd/app"
+
+# Command that runs the built artefact.
+exec = "./bin/app"
+
+# Quiet window after the last change before rebuilding. Editors emit several
+# events per save, so a small window collapses them into one reload.
+# Durations use Go syntax: "150ms", "1s", "2m".
+debounce = "150ms"
+
+# How long a process gets to shut down gracefully before it is force-killed.
+# Raise this if your server needs longer to drain connections.
+kill_delay = "5s"
+
+# Only rebuild when a file with one of these extensions changes. Leave it out
+# (or empty) to rebuild for any non-ignored file. Setting it is what stops a
+# README edit from triggering a compile.
+include_ext = [".go", ".tmpl", ".html"]
+
+# Extra directory names to ignore, on top of the built-in set
+# (.git, node_modules, vendor, bin, dist, build, tmp, temp, any dot-directory,
+#  and a few editor and language caches).
+exclude_dir = ["testdata", "docs"]
+
+# Directory names to watch even though they are ignored by default. This is the
+# only way to watch a directory named build/, dist/, tmp/, or anything starting
+# with a dot.
+include_dir = []
+
+# Debug logging: every event, every filter decision, every process transition.
+verbose = false

@@ -1,0 +1,20 @@
+# Normalise line endings so a checkout behaves the same on every platform.
+#
+# Without this, a Windows checkout can commit CRLF into files that must be LF:
+# GNU make fails on a CRLF Makefile, and shell heredocs in CI break the same
+# way. Forcing LF in the repository keeps the Linux and macOS CI runners happy
+# regardless of the contributor's core.autocrlf setting.
+* text=auto eol=lf
+
+# PowerShell is the exception: CRLF is the platform convention there.
+*.ps1 text eol=crlf
+
+# Binaries and archives must never be touched.
+*.exe binary
+*.dll binary
+*.so binary
+*.dylib binary
+*.png binary
+*.gif binary
+*.gz binary
+*.zip binary

@@ -1,0 +1,121 @@
+# golangci-lint configuration for hotreload.
+#
+# Run with:  golangci-lint run     (or: make lint)
+# Install:   go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+
+version: "2"
+
+run:
+  timeout: 5m
+  # The platform-specific process code only compiles under its own GOOS, so
+  # let the linter see both build-tagged variants where it can.
+  tests: true
+
+linters:
+  enable:
+    # Correctness
+    - errcheck # unchecked errors
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - bodyclose
+    - contextcheck # context propagation, which this project cares about a lot
+    - durationcheck # time.Duration multiplication mistakes
+    - errorlint # %w and errors.Is/As usage
+    - nilerr
+    - rowserrcheck
+    - copyloopvar
+
+    # Clarity
+    - gocritic
+    - misspell
+    - revive
+    - unconvert
+    - wastedassign
+    - whitespace
+
+    # Hygiene
+    - goconst
+    - prealloc
+    - predeclared
+    - usestdlibvars
+
+  settings:
+    errcheck:
+      # Deliberate fire-and-forget calls are written as `_ = f()`, and those
+      # should still be visible to the reader.
+      check-blank: false
+      exclude-functions:
+        - (*os.File).Close
+        - (io.Closer).Close
+
+    govet:
+      enable-all: true
+      disable:
+        # Struct field alignment is not worth the readability cost here.
+        - fieldalignment
+
+    revive:
+      rules:
+        - name: exported
+          arguments:
+            - disableStutteringCheck
+        - name: package-comments
+        - name: indent-error-flow
+        - name: error-strings
+        - name: unreachable-code
+
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - style
+        - performance
+      disabled-checks:
+        # Both fight the explanatory comment style used throughout this repo.
+        - commentFormatting
+        - whyNoLint
+
+    goconst:
+      min-len: 3
+      min-occurrences: 4
+      ignore-tests: true
+
+    misspell:
+      locale: UK
+
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      # Test files legitimately do things production code should not: long
+      # functions, magic numbers, deliberately ignored errors.
+      - path: _test\.go
+        linters:
+          - errcheck
+          - goconst
+          - gocritic
+
+      # The e2e tests build Go source as string templates, which trips several
+      # style checks for no benefit.
+      - path: e2e/
+        linters:
+          - gocritic
+          - revive
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/harshdalmia/hotreload-tool
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

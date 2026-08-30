@@ -28,5 +28,8 @@ vendor/
 Thumbs.db
 
 # Test coverage reports
-coverage.out
-coverage.html
+coverage
+coverage.*
+
+# GoReleaser snapshot output
+dist/
